@@ -21,7 +21,7 @@ git clone https://github.com/Carleton-SCI/OHLG.git
 ```
 3. Change directory to ohlg
 ```
-cd ohlg
+cd OHLG/ohlg
 ```
 4.* **For Windows**, open ```ohlg/Cargo.toml``` and modify the following line in the dependencies
 ```
