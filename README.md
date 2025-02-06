@@ -38,18 +38,18 @@ The benchmarking of a single gate performance is implemented in the main binary 
 ```
 cargo run --bin ohlg --release
 ```
-The benchmarking tests an obfuscated "XNOR" operation with bith inputs are zeros. The additive parameter is 6/8=-2/8 and the multiplicative parameter is 2. You can change these parameters to implement other gates by changing the following values in ```main.rs```
+The benchmarking tests an obfuscated "NAND" operation with both inputs are zeros. The additive parameter is 3/8 and the multiplicative parameter is 1. You can change these parameters to implement other gates by changing the following values in ```main.rs```
 ```Rust
-//----Perform an Obfuscated logic operation (XNOR) between two ciphertexts----
+//----Perform an Obfuscated logic operation (NAND) between two ciphertexts----
     //m1 and m2 are the Boolean plaintext values to be encrypted
-    //M is the plaintext value of the multiplicative parameter (=2 for XNOR operation)
-    //d is the plaintext value of the additive parameter (=6/8=-2/8 for XNOR operation)
+    //M is the plaintext value of the multiplicative parameter (=1 for NAND operation)
+    //d is the plaintext value of the additive parameter (=3/8 for NAND operation)
     
     let m1:bool = false;
     let m2:bool = false;
-    let M:u32 = 2;
-    let d: u32 = (1 << (32-3))*6 ;
-    let opr_str = "XNOR";
+    let M:u32 = 1;
+    let d: u32 = (1 << (32-3))*3 ;
+    let opr_str = "NAND";
 ```
 The implementation also allows for choosing the TFHE-io parameters ([link](https://tfhe.github.io/tfhe/security_and_params.html)) or the default Boolean TFHE-rs parameters ([link](https://github.com/zama-ai/tfhe-rs)). You can choose between them by editing the value of the ```param_choice``` variable in ```main.rs``` to be ```TFHE_RS``` or ```TFHE_IO```
 ```Rust

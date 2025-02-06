@@ -40,18 +40,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
     let client_key = ClientKey::new(&tgsw_params.tfhe_params);
     let server_key = ServerKey::new(&client_key);
 
-    //----Perform an Obfuscated logic operation (XNOR) between two ciphertexts----
+    //----Perform an Obfuscated logic operation (NAND) between two ciphertexts----
     //m1 and m2 are the Boolean plaintext values to be encrypted
-    //M is the plaintext value of the multiplicative parameter (=2 for XNOR operation)
-    //d is the plaintext value of the additive parameter (=6/8=-2/8 for XNOR operation)
+    //M is the plaintext value of the multiplicative parameter (=1 for NAND operation)
+    //d is the plaintext value of the additive parameter (=3/8 for NAND operation)
     
     let m1:bool = false;
     let m2:bool = false;
-    let M:u32 = 2;
-    let d: u32 = (1 << (32-3))*6 ;
-    let opr_str = "XNOR";
+    let M:u32 = 1;
+    let d: u32 = (1 << (32-3))*3 ;
+    let opr_str = "NAND";
     
-    //Check the operation correctness (The result of the obfuscated XNOR gate should be true if both m1 and m2 are false)
+    //Check the operation correctness (The result of the obfuscated NAND gate should be true if both m1 and m2 are false)
     //The counters for the true and false results (the result of the obfuscated gate, depends on the input values)
     //All the results should be true or all should be false
     let mut true_counter = 0;
@@ -105,13 +105,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>>{
         let ct_2 = client_key.encrypt(m2);
         
         let start = Instant::now();
-        let _ct_xor = server_key.xnor(&ct_1,&ct_2);
+        let _ct_nand = server_key.nand(&ct_1,&ct_2);
         let duration = start.elapsed();
         
         time_accumulator_tfhe += duration;
 
     }
-    println!("Average time of a typical XNOR TFHE gate: {:?}",time_accumulator_tfhe/trials);
+    println!("Average time of a typical NAND TFHE gate: {:?}",time_accumulator_tfhe/trials);
     
 
 
