@@ -95,7 +95,12 @@ which decrypts and prints the matching result.
 
 
 ### Using the docker image
-The repo contains ```ohlg_bin``` which is a pre-built docker image for the executables. The following command can be used to load the image (be sure the system has docker installed first):
+The repo contains ```ohlg_bin``` which is a pre-built docker image for the executables. First, clone the repo and change directory:
+```
+git clone https://github.com/Carleton-SCI/OHLG.git
+cd OHLG/ohlg
+```
+The following command can be used to load the image (be sure the system has docker installed first):
 ```
 docker load -i ohlg_bin.tar
 ```
