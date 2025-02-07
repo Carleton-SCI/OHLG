@@ -130,7 +130,7 @@ The new image can be loaded and used following similar steps as above.
 
 # Licensing
 BSD 3-Clause Clear License
-Copyright (c) 2025 Secure Cryptographic Implementations lab (SCI-lab), Carleton University
+Copyright (c) 2025 Secure Cryptographic Implementations lab (SCI-lab), Carleton University.  
 This software is built in and on top of Zama's TFHE implementation, for which the license is retained in the thfe-rs directory as is.
 
 
