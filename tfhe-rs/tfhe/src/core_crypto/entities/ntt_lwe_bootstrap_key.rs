@@ -12,6 +12,17 @@ use crate::core_crypto::entities::polynomial_list::{PolynomialListMutView, Polyn
 use aligned_vec::ABox;
 use tfhe_versionable::Versionize;
 
+/// Enum option for BootstrapKey conversion in the Ntt domain.
+/// It enables to choose to embed Ntt normalization inside bootstrap_key or not.
+///
+/// NB: Embed normalization inside BSK enable to use a denaturate version of the INtt without
+/// normalisation and could save some computations on some architectures
+#[derive(Debug, Clone, Copy)]
+pub enum NttLweBootstrapKeyOption {
+    Raw,
+    Normalize,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Versionize)]
 #[versionize(NttLweBootstrapKeyVersions)]
 pub struct NttLweBootstrapKey<C: Container>
@@ -119,7 +130,10 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> NttLweBootstrapKey
     /// consider calling [`NttLweBootstrapKey::as_view`] or
     /// [`NttLweBootstrapKey::as_mut_view`] first to have an iterator over borrowed contents
     /// instead of consuming the original entity.
-    pub fn into_ggsw_iter(self) -> impl DoubleEndedIterator<Item = NttGgswCiphertext<C>>
+    pub fn into_ggsw_iter(
+        self,
+    ) -> impl DoubleEndedIterator<Item = NttGgswCiphertext<C>>
+           + ExactSizeIterator<Item = NttGgswCiphertext<C>>
     where
         C: Split,
     {

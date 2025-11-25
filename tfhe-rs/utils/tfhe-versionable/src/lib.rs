@@ -6,15 +6,19 @@
 //! that has a variant for each version of the type.
 //! These traits can be generated using the [`tfhe_versionable_derive::Versionize`] proc macro.
 
+pub mod deprecation;
 pub mod derived_traits;
 pub mod upgrade;
 
 use aligned_vec::{ABox, AVec};
+use deprecation::DeprecatedVersionError;
 use num_complex::Complex;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::Infallible;
 use std::error::Error;
 use std::fmt::Display;
 use std::marker::PhantomData;
+use std::num::{NonZero, Wrapping};
 use std::sync::Arc;
 
 pub use derived_traits::{Version, VersionsDispatch};
@@ -46,9 +50,10 @@ pub trait VersionizeOwned {
     fn versionize_owned(self) -> Self::VersionedOwned;
 }
 
-/// This trait is used as a proxy to be more felxible when deriving Versionize for Vec<T>.
-/// This way, we can chose to skip versioning Vec<T> if T is a native types but still versionize in
-/// a loop if T is a custom type.
+/// This trait is used as a proxy to be more flexible when deriving Versionize for `Vec<T>`.
+///
+/// This way, we can chose to skip versioning `Vec<T>` if T is a native types but still versionize
+/// in a loop if T is a custom type.
 /// This is used as a workaround for feature(specialization) and to bypass the orphan rule.
 pub trait VersionizeSlice: Sized {
     type VersionedSlice<'vers>: Serialize
@@ -71,15 +76,27 @@ pub enum UnversionizeError {
     Upgrade {
         from_vers: String,
         into_vers: String,
-        source: Box<dyn Error>,
+        source: Box<dyn Error + Send + Sync>,
     },
 
     /// An error has been returned in the conversion method provided by the `try_from` parameter
     /// attribute
     Conversion {
         from_type: String,
-        source: Box<dyn Error>,
+        source: Box<dyn Error + Send + Sync>,
     },
+
+    /// The length of a statically sized array is wrong
+    ArrayLength {
+        expected_size: usize,
+        found_size: usize,
+    },
+
+    /// A deprecated version has been found
+    DeprecatedVersion(DeprecatedVersionError),
+
+    /// User tried to unversionize an enum variant with the `#[versionize(skip)]` attribute
+    SkippedVariant { variant_name: String },
 }
 
 impl Display for UnversionizeError {
@@ -96,6 +113,19 @@ impl Display for UnversionizeError {
             Self::Conversion { from_type, source } => {
                 write!(f, "Failed to convert from {from_type}: {source}")
             }
+            Self::ArrayLength {
+                expected_size,
+                found_size,
+            } => {
+                write!(
+                    f,
+                    "Expected array of size {expected_size}, found array of size {found_size}"
+                )
+            }
+            Self::DeprecatedVersion(deprecation_error) => deprecation_error.fmt(f),
+            Self::SkippedVariant { variant_name } => write!(f,
+                "Enum variant {variant_name} is marked with the `skip` attribute and cannot be unversioned"
+            ),
         }
     }
 }
@@ -105,12 +135,19 @@ impl Error for UnversionizeError {
         match self {
             UnversionizeError::Upgrade { source, .. } => Some(source.as_ref()),
             UnversionizeError::Conversion { source, .. } => Some(source.as_ref()),
+            UnversionizeError::ArrayLength { .. } => None,
+            UnversionizeError::DeprecatedVersion(_) => None,
+            UnversionizeError::SkippedVariant { .. } => None,
         }
     }
 }
 
 impl UnversionizeError {
-    pub fn upgrade<E: Error + 'static>(from_vers: &str, into_vers: &str, source: E) -> Self {
+    pub fn upgrade<E: Error + 'static + Send + Sync>(
+        from_vers: &str,
+        into_vers: &str,
+        source: E,
+    ) -> Self {
         Self::Upgrade {
             from_vers: from_vers.to_string(),
             into_vers: into_vers.to_string(),
@@ -118,10 +155,16 @@ impl UnversionizeError {
         }
     }
 
-    pub fn conversion<E: Error + 'static>(from_type: &str, source: E) -> Self {
+    pub fn conversion<E: Error + 'static + Send + Sync>(from_type: &str, source: E) -> Self {
         Self::Conversion {
             from_type: from_type.to_string(),
             source: Box::new(source),
+        }
+    }
+
+    pub fn skipped_variant(variant_name: &str) -> Self {
+        Self::SkippedVariant {
+            variant_name: variant_name.to_string(),
         }
     }
 }
@@ -132,9 +175,10 @@ impl From<Infallible> for UnversionizeError {
     }
 }
 
-/// This trait means that we can convert from a versioned enum into the target type. This trait
-/// can only be implemented on Owned/static types, whereas `Versionize` can also be implemented
-/// on reference types.
+/// This trait means that we can convert from a versioned enum into the target type.
+///
+/// This trait can only be implemented on Owned/static types, whereas `Versionize` can also be
+/// implemented on reference types.
 pub trait Unversionize: VersionizeOwned + Sized {
     /// Creates an object from a versioned enum, and eventually upgrades from previous
     /// variants.
@@ -150,7 +194,10 @@ pub trait UnversionizeVec: VersionizeVec {
 pub trait NotVersioned: Versionize {}
 
 impl<T: NotVersioned + Serialize + DeserializeOwned + Clone> VersionizeSlice for T {
-    type VersionedSlice<'vers> = &'vers [T] where T: 'vers;
+    type VersionedSlice<'vers>
+        = &'vers [T]
+    where
+        T: 'vers;
 
     fn versionize_slice(slice: &[Self]) -> Self::VersionedSlice<'_> {
         slice
@@ -198,8 +245,6 @@ macro_rules! impl_scalar_versionize {
         }
 
         impl NotVersioned for $t {}
-
-        impl NotVersioned for Vec<$t> {}
     };
 }
 
@@ -223,8 +268,41 @@ impl_scalar_versionize!(f64);
 
 impl_scalar_versionize!(char);
 
+impl_scalar_versionize!(NonZero<u32>);
+impl_scalar_versionize!(NonZero<usize>);
+
+impl<T: Versionize> Versionize for Wrapping<T> {
+    type Versioned<'vers>
+        = Wrapping<T::Versioned<'vers>>
+    where
+        T: 'vers;
+
+    fn versionize(&self) -> Self::Versioned<'_> {
+        Wrapping(self.0.versionize())
+    }
+}
+
+impl<T: VersionizeOwned> VersionizeOwned for Wrapping<T> {
+    type VersionedOwned = Wrapping<T::VersionedOwned>;
+
+    fn versionize_owned(self) -> Self::VersionedOwned {
+        Wrapping(T::versionize_owned(self.0))
+    }
+}
+
+impl<T: Unversionize> Unversionize for Wrapping<T> {
+    fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
+        Ok(Wrapping(T::unversionize(versioned.0)?))
+    }
+}
+
+impl<T: NotVersioned> NotVersioned for Wrapping<T> {}
+
 impl<T: Versionize> Versionize for Box<T> {
-    type Versioned<'vers> = T::Versioned<'vers> where T: 'vers;
+    type Versioned<'vers>
+        = T::Versioned<'vers>
+    where
+        T: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         self.as_ref().versionize()
@@ -245,8 +323,69 @@ impl<T: Unversionize> Unversionize for Box<T> {
     }
 }
 
+impl<T: VersionizeSlice + Clone> Versionize for Box<[T]> {
+    type Versioned<'vers>
+        = T::VersionedSlice<'vers>
+    where
+        T: 'vers;
+
+    fn versionize(&self) -> Self::Versioned<'_> {
+        T::versionize_slice(self)
+    }
+}
+
+impl<T: VersionizeVec + Clone> VersionizeOwned for Box<[T]> {
+    type VersionedOwned = T::VersionedVec;
+
+    fn versionize_owned(self) -> Self::VersionedOwned {
+        T::versionize_vec(self.to_vec())
+    }
+}
+
+impl<T: UnversionizeVec + Clone> Unversionize for Box<[T]> {
+    fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
+        T::unversionize_vec(versioned).map(|unver| unver.into_boxed_slice())
+    }
+}
+
+impl<T: VersionizeVec + Clone> VersionizeVec for Box<[T]> {
+    type VersionedVec = Vec<T::VersionedVec>;
+
+    fn versionize_vec(vec: Vec<Self>) -> Self::VersionedVec {
+        vec.into_iter()
+            .map(|inner| inner.versionize_owned())
+            .collect()
+    }
+}
+
+impl<T: VersionizeSlice> VersionizeSlice for Box<[T]> {
+    type VersionedSlice<'vers>
+        = Vec<T::VersionedSlice<'vers>>
+    where
+        T: 'vers;
+
+    fn versionize_slice(slice: &[Self]) -> Self::VersionedSlice<'_> {
+        slice
+            .iter()
+            .map(|inner| T::versionize_slice(inner))
+            .collect()
+    }
+}
+
+impl<T: UnversionizeVec + Clone> UnversionizeVec for Box<[T]> {
+    fn unversionize_vec(versioned: Self::VersionedVec) -> Result<Vec<Self>, UnversionizeError> {
+        versioned
+            .into_iter()
+            .map(Box::<[T]>::unversionize)
+            .collect()
+    }
+}
+
 impl<T: VersionizeSlice> Versionize for Vec<T> {
-    type Versioned<'vers> = T::VersionedSlice<'vers> where T: 'vers;
+    type Versioned<'vers>
+        = T::VersionedSlice<'vers>
+    where
+        T: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         T::versionize_slice(self)
@@ -261,8 +400,50 @@ impl<T: VersionizeVec> VersionizeOwned for Vec<T> {
     }
 }
 
+impl<T: UnversionizeVec> Unversionize for Vec<T> {
+    fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
+        T::unversionize_vec(versioned)
+    }
+}
+
+impl<T: VersionizeVec> VersionizeVec for Vec<T> {
+    type VersionedVec = Vec<T::VersionedVec>;
+
+    fn versionize_vec(vec: Vec<Self>) -> Self::VersionedVec {
+        vec.into_iter()
+            .map(|inner| T::versionize_vec(inner))
+            .collect()
+    }
+}
+
+impl<T: VersionizeSlice> VersionizeSlice for Vec<T> {
+    type VersionedSlice<'vers>
+        = Vec<T::VersionedSlice<'vers>>
+    where
+        T: 'vers;
+
+    fn versionize_slice(slice: &[Self]) -> Self::VersionedSlice<'_> {
+        slice
+            .iter()
+            .map(|inner| T::versionize_slice(inner))
+            .collect()
+    }
+}
+
+impl<T: UnversionizeVec> UnversionizeVec for Vec<T> {
+    fn unversionize_vec(versioned: Self::VersionedVec) -> Result<Vec<Self>, UnversionizeError> {
+        versioned
+            .into_iter()
+            .map(|inner| T::unversionize_vec(inner))
+            .collect()
+    }
+}
+
 impl<T: VersionizeSlice + Clone> Versionize for [T] {
-    type Versioned<'vers> = T::VersionedSlice<'vers> where T: 'vers;
+    type Versioned<'vers>
+        = T::VersionedSlice<'vers>
+    where
+        T: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         T::versionize_slice(self)
@@ -277,9 +458,92 @@ impl<T: VersionizeVec + Clone> VersionizeOwned for &[T] {
     }
 }
 
-impl<T: UnversionizeVec> Unversionize for Vec<T> {
+impl<T: VersionizeVec + Clone> VersionizeVec for &[T] {
+    type VersionedVec = Vec<T::VersionedVec>;
+
+    fn versionize_vec(vec: Vec<Self>) -> Self::VersionedVec {
+        vec.into_iter()
+            .map(|inner| T::versionize_vec(inner.to_vec()))
+            .collect()
+    }
+}
+
+impl<'a, T: VersionizeSlice> VersionizeSlice for &'a [T] {
+    type VersionedSlice<'vers>
+        = Vec<T::VersionedSlice<'vers>>
+    where
+        T: 'vers,
+        'a: 'vers;
+
+    fn versionize_slice(slice: &[Self]) -> Self::VersionedSlice<'_> {
+        slice
+            .iter()
+            .map(|inner| T::versionize_slice(inner))
+            .collect()
+    }
+}
+
+// Since serde doesn't support arbitrary length arrays with const generics, the array
+// is converted to a slice/vec.
+impl<const N: usize, T: VersionizeSlice> Versionize for [T; N] {
+    type Versioned<'vers>
+        = T::VersionedSlice<'vers>
+    where
+        T: 'vers;
+
+    fn versionize(&self) -> Self::Versioned<'_> {
+        T::versionize_slice(self)
+    }
+}
+
+impl<const N: usize, T: VersionizeVec + Clone> VersionizeOwned for [T; N] {
+    type VersionedOwned = T::VersionedVec;
+
+    fn versionize_owned(self) -> Self::VersionedOwned {
+        T::versionize_vec(self.to_vec())
+    }
+}
+
+impl<const N: usize, T: UnversionizeVec + Clone> Unversionize for [T; N] {
     fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
-        T::unversionize_vec(versioned)
+        let v = T::unversionize_vec(versioned)?;
+        let boxed_slice = v.into_boxed_slice();
+        TryInto::<Box<[T; N]>>::try_into(boxed_slice)
+            .map(|array| *array)
+            .map_err(|slice| UnversionizeError::ArrayLength {
+                expected_size: N,
+                found_size: slice.len(),
+            })
+    }
+}
+
+impl<const N: usize, T: VersionizeVec + Clone> VersionizeVec for [T; N] {
+    type VersionedVec = Vec<T::VersionedVec>;
+
+    fn versionize_vec(vec: Vec<Self>) -> Self::VersionedVec {
+        vec.into_iter()
+            .map(|inner| inner.versionize_owned())
+            .collect()
+    }
+}
+
+impl<const N: usize, T: VersionizeSlice> VersionizeSlice for [T; N] {
+    type VersionedSlice<'vers>
+        = Vec<T::VersionedSlice<'vers>>
+    where
+        T: 'vers;
+
+    fn versionize_slice(slice: &[Self]) -> Self::VersionedSlice<'_> {
+        slice
+            .iter()
+            .map(|inner| T::versionize_slice(inner))
+            .collect()
+    }
+}
+
+impl<const N: usize, T: UnversionizeVec + Clone> UnversionizeVec for [T; N] {
+    fn unversionize_vec(versioned: Self::VersionedVec) -> Result<Vec<Self>, UnversionizeError> {
+        versioned.into_iter().map(<[T; N]>::unversionize).collect()
     }
 }
 
@@ -326,7 +590,10 @@ impl VersionizeOwned for &str {
 impl NotVersioned for str {}
 
 impl<T: Versionize> Versionize for Option<T> {
-    type Versioned<'vers> = Option<T::Versioned<'vers>> where T: 'vers;
+    type Versioned<'vers>
+        = Option<T::Versioned<'vers>>
+    where
+        T: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         self.as_ref().map(|val| val.versionize())
@@ -350,7 +617,8 @@ impl<T: Unversionize> Unversionize for Option<T> {
 impl<T: NotVersioned> NotVersioned for Option<T> {}
 
 impl<T> Versionize for PhantomData<T> {
-    type Versioned<'vers> = Self
+    type Versioned<'vers>
+        = Self
     where
         Self: 'vers;
 
@@ -376,7 +644,8 @@ impl<T> Unversionize for PhantomData<T> {
 impl<T> NotVersioned for PhantomData<T> {}
 
 impl<T: Versionize> Versionize for Arc<T> {
-    type Versioned<'vers> = T::Versioned<'vers>
+    type Versioned<'vers>
+        = T::Versioned<'vers>
     where
         T: 'vers;
 
@@ -402,7 +671,10 @@ impl<T: Unversionize + Clone> Unversionize for Arc<T> {
 impl<T: NotVersioned> NotVersioned for Arc<T> {}
 
 impl<T: Versionize> Versionize for Complex<T> {
-    type Versioned<'vers> = Complex<T::Versioned<'vers>> where T: 'vers;
+    type Versioned<'vers>
+        = Complex<T::Versioned<'vers>>
+    where
+        T: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         Complex {
@@ -435,23 +707,26 @@ impl<T: Unversionize> Unversionize for Complex<T> {
 impl<T: NotVersioned> NotVersioned for Complex<T> {}
 
 impl<T: Versionize> Versionize for ABox<T> {
-    type Versioned<'vers> = T::Versioned<'vers> where T: 'vers;
+    type Versioned<'vers>
+        = T::Versioned<'vers>
+    where
+        T: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         self.as_ref().versionize()
     }
 }
 
-impl<T: VersionizeOwned + Copy> VersionizeOwned for ABox<T> {
+impl<T: VersionizeOwned + Clone> VersionizeOwned for ABox<T> {
     // Alignment doesn't matter for versioned types
     type VersionedOwned = Box<T::VersionedOwned>;
 
     fn versionize_owned(self) -> Self::VersionedOwned {
-        Box::new(T::versionize_owned(*self))
+        Box::new(T::versionize_owned(T::clone(&self)))
     }
 }
 
-impl<T: Unversionize + Copy> Unversionize for ABox<T>
+impl<T: Unversionize + Clone> Unversionize for ABox<T>
 where
     T::VersionedOwned: Clone,
 {
@@ -460,8 +735,38 @@ where
     }
 }
 
+impl<T: VersionizeSlice + Clone> Versionize for ABox<[T]> {
+    type Versioned<'vers>
+        = T::VersionedSlice<'vers>
+    where
+        T: 'vers;
+
+    fn versionize(&self) -> Self::Versioned<'_> {
+        T::versionize_slice(self)
+    }
+}
+
+impl<T: VersionizeVec + Clone> VersionizeOwned for ABox<[T]> {
+    type VersionedOwned = T::VersionedVec;
+
+    fn versionize_owned(self) -> Self::VersionedOwned {
+        T::versionize_vec(self.iter().cloned().collect())
+    }
+}
+
+impl<T: UnversionizeVec + Clone> Unversionize for ABox<[T]> {
+    fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
+        T::unversionize_vec(versioned).map(|unver| AVec::from_iter(0, unver).into_boxed_slice())
+    }
+}
+
+impl<T: NotVersioned + Clone + Serialize + DeserializeOwned> NotVersioned for ABox<[T]> {}
+
 impl<T: VersionizeSlice> Versionize for AVec<T> {
-    type Versioned<'vers> = T::VersionedSlice<'vers> where T: 'vers;
+    type Versioned<'vers>
+        = T::VersionedSlice<'vers>
+    where
+        T: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         T::versionize_slice(self)
@@ -505,8 +810,13 @@ impl Unversionize for () {
 
 impl NotVersioned for () {}
 
+// TODO: use a macro for more tuple sizes
 impl<T: Versionize, U: Versionize> Versionize for (T, U) {
-    type Versioned<'vers> = (T::Versioned<'vers>, U::Versioned<'vers>) where T: 'vers, U: 'vers;
+    type Versioned<'vers>
+        = (T::Versioned<'vers>, U::Versioned<'vers>)
+    where
+        T: 'vers,
+        U: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         (self.0.versionize(), self.1.versionize())
@@ -527,10 +837,51 @@ impl<T: Unversionize, U: Unversionize> Unversionize for (T, U) {
     }
 }
 
-impl<T: NotVersioned, U: NotVersioned> NotVersioned for (T, U) {}
+impl<T: Versionize, U: Versionize> VersionizeSlice for (T, U) {
+    type VersionedSlice<'vers>
+        = Vec<(T::Versioned<'vers>, U::Versioned<'vers>)>
+    where
+        T: 'vers,
+        U: 'vers;
+
+    fn versionize_slice(slice: &[Self]) -> Self::VersionedSlice<'_> {
+        slice
+            .iter()
+            .map(|(t, u)| (t.versionize(), u.versionize()))
+            .collect()
+    }
+}
+
+impl<T: VersionizeOwned, U: VersionizeOwned> VersionizeVec for (T, U) {
+    type VersionedVec = Vec<(T::VersionedOwned, U::VersionedOwned)>;
+
+    fn versionize_vec(vec: Vec<Self>) -> Self::VersionedVec {
+        vec.into_iter()
+            .map(|(t, u)| (t.versionize_owned(), u.versionize_owned()))
+            .collect()
+    }
+}
+
+impl<T: Unversionize, U: Unversionize> UnversionizeVec for (T, U) {
+    fn unversionize_vec(versioned: Self::VersionedVec) -> Result<Vec<Self>, UnversionizeError> {
+        versioned
+            .into_iter()
+            .map(|(t, u)| Ok((T::unversionize(t)?, U::unversionize(u)?)))
+            .collect()
+    }
+}
 
 impl<T: Versionize, U: Versionize, V: Versionize> Versionize for (T, U, V) {
-    type Versioned<'vers> = (T::Versioned<'vers>, U::Versioned<'vers>, V::Versioned<'vers>) where T: 'vers, U: 'vers, V: 'vers;
+    type Versioned<'vers>
+        = (
+        T::Versioned<'vers>,
+        U::Versioned<'vers>,
+        V::Versioned<'vers>,
+    )
+    where
+        T: 'vers,
+        U: 'vers,
+        V: 'vers;
 
     fn versionize(&self) -> Self::Versioned<'_> {
         (
@@ -563,4 +914,179 @@ impl<T: Unversionize, U: Unversionize, V: Unversionize> Unversionize for (T, U, 
     }
 }
 
-impl<T: NotVersioned, U: NotVersioned, V: NotVersioned> NotVersioned for (T, U, V) {}
+impl<T: Versionize, U: Versionize, V: Versionize> VersionizeSlice for (T, U, V) {
+    type VersionedSlice<'vers>
+        = Vec<(
+        T::Versioned<'vers>,
+        U::Versioned<'vers>,
+        V::Versioned<'vers>,
+    )>
+    where
+        T: 'vers,
+        U: 'vers,
+        V: 'vers;
+
+    fn versionize_slice(slice: &[Self]) -> Self::VersionedSlice<'_> {
+        slice
+            .iter()
+            .map(|(t, u, v)| (t.versionize(), u.versionize(), v.versionize()))
+            .collect()
+    }
+}
+
+impl<T: VersionizeOwned, U: VersionizeOwned, V: VersionizeOwned> VersionizeVec for (T, U, V) {
+    type VersionedVec = Vec<(T::VersionedOwned, U::VersionedOwned, V::VersionedOwned)>;
+
+    fn versionize_vec(vec: Vec<Self>) -> Self::VersionedVec {
+        vec.into_iter()
+            .map(|(t, u, v)| {
+                (
+                    t.versionize_owned(),
+                    u.versionize_owned(),
+                    v.versionize_owned(),
+                )
+            })
+            .collect()
+    }
+}
+
+impl<T: Unversionize, U: Unversionize, V: Unversionize> UnversionizeVec for (T, U, V) {
+    fn unversionize_vec(versioned: Self::VersionedVec) -> Result<Vec<Self>, UnversionizeError> {
+        versioned
+            .into_iter()
+            .map(|(t, u, v)| {
+                Ok((
+                    T::unversionize(t)?,
+                    U::unversionize(u)?,
+                    V::unversionize(v)?,
+                ))
+            })
+            .collect()
+    }
+}
+
+// converts to `Vec<T::Versioned>` for the versioned type, so we don't have to derive
+// Eq/Hash on it.
+impl<T: Versionize> Versionize for HashSet<T> {
+    type Versioned<'vers>
+        = Vec<T::Versioned<'vers>>
+    where
+        T: 'vers;
+
+    fn versionize(&self) -> Self::Versioned<'_> {
+        self.iter().map(|val| val.versionize()).collect()
+    }
+}
+
+impl<T: VersionizeOwned> VersionizeOwned for HashSet<T> {
+    type VersionedOwned = Vec<T::VersionedOwned>;
+
+    fn versionize_owned(self) -> Self::VersionedOwned {
+        self.into_iter().map(|val| val.versionize_owned()).collect()
+    }
+}
+
+impl<T: Unversionize + std::hash::Hash + Eq> Unversionize for HashSet<T> {
+    fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
+        versioned
+            .into_iter()
+            .map(|val| T::unversionize(val))
+            .collect()
+    }
+}
+
+impl<T: Versionize> Versionize for BTreeSet<T> {
+    type Versioned<'vers>
+        = Vec<T::Versioned<'vers>>
+    where
+        T: 'vers;
+
+    fn versionize(&self) -> Self::Versioned<'_> {
+        self.iter().map(|val| val.versionize()).collect()
+    }
+}
+
+impl<T: VersionizeOwned> VersionizeOwned for BTreeSet<T> {
+    type VersionedOwned = Vec<T::VersionedOwned>;
+
+    fn versionize_owned(self) -> Self::VersionedOwned {
+        self.into_iter().map(|val| val.versionize_owned()).collect()
+    }
+}
+
+impl<T: Unversionize + Ord> Unversionize for BTreeSet<T> {
+    fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
+        versioned
+            .into_iter()
+            .map(|val| T::unversionize(val))
+            .collect()
+    }
+}
+
+// converts to `Vec<(K::Versioned, V::Versioned)>` for the versioned type, so we don't have to
+// derive Eq/Hash on it.
+impl<K: Versionize, V: Versionize> Versionize for HashMap<K, V> {
+    type Versioned<'vers>
+        = Vec<(K::Versioned<'vers>, V::Versioned<'vers>)>
+    where
+        K: 'vers,
+        V: 'vers;
+
+    fn versionize(&self) -> Self::Versioned<'_> {
+        self.iter()
+            .map(|(key, val)| (key.versionize(), val.versionize()))
+            .collect()
+    }
+}
+
+impl<K: VersionizeOwned, V: VersionizeOwned> VersionizeOwned for HashMap<K, V> {
+    type VersionedOwned = Vec<(K::VersionedOwned, V::VersionedOwned)>;
+
+    fn versionize_owned(self) -> Self::VersionedOwned {
+        self.into_iter()
+            .map(|(key, val)| (key.versionize_owned(), val.versionize_owned()))
+            .collect()
+    }
+}
+
+impl<K: Unversionize + std::hash::Hash + Eq, V: Unversionize> Unversionize for HashMap<K, V> {
+    fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
+        versioned
+            .into_iter()
+            .map(|(key, val)| Ok((K::unversionize(key)?, V::unversionize(val)?)))
+            .collect()
+    }
+}
+
+impl<K: Versionize, V: Versionize> Versionize for BTreeMap<K, V> {
+    type Versioned<'vers>
+        = Vec<(K::Versioned<'vers>, V::Versioned<'vers>)>
+    where
+        K: 'vers,
+        V: 'vers;
+
+    fn versionize(&self) -> Self::Versioned<'_> {
+        self.iter()
+            .map(|(key, val)| (key.versionize(), val.versionize()))
+            .collect()
+    }
+}
+
+impl<K: VersionizeOwned, V: VersionizeOwned> VersionizeOwned for BTreeMap<K, V> {
+    type VersionedOwned = Vec<(K::VersionedOwned, V::VersionedOwned)>;
+
+    fn versionize_owned(self) -> Self::VersionedOwned {
+        self.into_iter()
+            .map(|(key, val)| (key.versionize_owned(), val.versionize_owned()))
+            .collect()
+    }
+}
+
+impl<K: Unversionize + Ord, V: Unversionize> Unversionize for BTreeMap<K, V> {
+    fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
+        versioned
+            .into_iter()
+            .map(|(key, val)| Ok((K::unversionize(key)?, V::unversionize(val)?)))
+            .collect()
+    }
+}

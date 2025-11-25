@@ -172,7 +172,7 @@ pub fn test_extract_bits() {
     };
     let req = req().unwrap();
     let mut mem = GlobalPodBuffer::new(req);
-    let mut stack = PodStack::new(&mut mem);
+    let stack = PodStack::new(&mut mem);
 
     fourier_bsk
         .as_mut_view()
@@ -225,7 +225,7 @@ pub fn test_extract_bits() {
             delta_log,
             number_values_to_extract,
             fft,
-            stack.rb_mut(),
+            stack,
         );
 
         // Decryption of extracted bit
@@ -495,9 +495,9 @@ pub fn test_cmux_tree() {
         let witness = value % (1 << (64 - delta_log));
 
         // Bit decomposition of the value from MSB to LSB
-        let mut vec_message = vec![Plaintext(0); nb_ggsw];
+        let mut vec_message = vec![Cleartext(0); nb_ggsw];
         for i in (0..nb_ggsw).rev() {
-            vec_message[i] = Plaintext(value & 1);
+            vec_message[i] = Cleartext(value & 1);
             value >>= 1;
         }
 
@@ -521,7 +521,7 @@ pub fn test_cmux_tree() {
             level,
         );
         for (&single_bit_msg, mut fourier_ggsw) in
-            izip!(vec_message.iter(), ggsw_list.as_mut_view().into_ggsw_iter())
+            izip_eq!(vec_message.iter(), ggsw_list.as_mut_view().into_ggsw_iter())
         {
             let mut ggsw = GgswCiphertextOwned::new(
                 0_u64,
@@ -809,8 +809,9 @@ fn test_wop_add_one(params: FftWopPbsTestParams<u64>) {
     rsc.encryption_random_generator
         .fill_slice_with_random_uniform_mask(&mut vals[1..]);
     // Apply our modulus to be sure we can represent the test values
-    vals.iter_mut()
-        .for_each(|x| *x %= 1 << number_of_input_bits);
+    for x in vals.iter_mut() {
+        *x %= 1 << number_of_input_bits;
+    }
 
     for val in vals {
         let mut extracted_bits = LweCiphertextList::new(

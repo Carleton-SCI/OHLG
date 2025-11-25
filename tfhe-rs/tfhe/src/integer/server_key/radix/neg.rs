@@ -2,7 +2,6 @@ use crate::integer::ciphertext::IntegerRadixCiphertext;
 use crate::integer::server_key::CheckError;
 use crate::integer::ServerKey;
 use crate::shortint::ciphertext::{Degree, MaxDegree};
-#[cfg(any(test, feature = "gpu"))]
 use crate::shortint::MessageModulus;
 
 /// Iterator that returns the new degree of blocks
@@ -10,13 +9,11 @@ use crate::shortint::MessageModulus;
 ///
 /// It takes as input an iterator that returns the degree of the blocks
 /// before negation as well as their message modulus.
-#[cfg(any(test, feature = "gpu"))]
 pub(crate) struct NegatedDegreeIter<I> {
     iter: I,
-    z_b: usize,
+    z_b: u64,
 }
 
-#[cfg(any(test, feature = "gpu"))]
 impl<I> NegatedDegreeIter<I>
 where
     I: Iterator<Item = (Degree, MessageModulus)>,
@@ -26,7 +23,6 @@ where
     }
 }
 
-#[cfg(any(test, feature = "gpu"))]
 impl<I> Iterator for NegatedDegreeIter<I>
 where
     I: Iterator<Item = (Degree, MessageModulus)>,
@@ -39,11 +35,11 @@ where
 
         // Ensure z is always >= 1 (which would not be the case if degree == 0)
         // some algorithms (e.g. overflowing_sub) require this even for trivial zeros
-        let mut z = current_degree.get().div_ceil(msg_mod.0).max(1) as u64;
-        z *= msg_mod.0 as u64;
+        let mut z = current_degree.get().div_ceil(msg_mod.0).max(1);
+        z *= msg_mod.0;
 
-        let new_degree = Degree::new(z as usize - self.z_b);
-        self.z_b = z as usize / msg_mod.0;
+        let new_degree = Degree::new(z - self.z_b);
+        self.z_b = z / msg_mod.0;
 
         Some(new_degree)
     }
@@ -62,12 +58,12 @@ impl ServerKey {
     /// ```rust
     /// // Encrypt two messages:
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
     /// let modulus = 1 << 8;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 159u64;
     ///
@@ -111,9 +107,9 @@ impl ServerKey {
                 self.key.unchecked_scalar_add_assign(block, z_b);
             }
             z = self.key.unchecked_neg_assign_with_correcting_term(block);
-            block.degree = Degree::new(z as usize - z_b as usize);
+            block.degree = Degree::new(z - u64::from(z_b));
 
-            z_b = (z / self.key.message_modulus.0 as u64) as u8;
+            z_b = (z / self.key.message_modulus.0) as u8;
         }
     }
 
@@ -123,11 +119,11 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 2u64;
     ///
@@ -180,11 +176,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 1u64;
     ///
@@ -195,7 +191,7 @@ impl ServerKey {
     /// let ct_res = sks.checked_neg(&ctxt);
     ///
     /// match ct_res {
-    ///     Err(x) => panic!("{:?}", x),
+    ///     Err(x) => panic!("{x:?}"),
     ///     Ok(y) => {
     ///         let clear: u64 = cks.decrypt(&y);
     ///         assert_eq!(255, clear);
@@ -222,12 +218,12 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
     /// let modulus = 1 << 8;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 1;
     ///
@@ -235,7 +231,7 @@ impl ServerKey {
     /// let mut ct = cks.encrypt(msg);
     ///
     /// // Compute homomorphically a negation:
-    /// sks.checked_neg_assign(&mut ct);
+    /// sks.checked_neg_assign(&mut ct).unwrap();
     ///
     /// let clear_res: u64 = cks.decrypt(&ct);
     /// assert_eq!(clear_res, (modulus - msg));
@@ -258,11 +254,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 1u64;
     ///
@@ -295,11 +291,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 1u64;
     ///

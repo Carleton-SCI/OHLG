@@ -7,25 +7,26 @@ use crate::integer::server_key::radix_parallel::tests_signed::{
 use crate::integer::server_key::radix_parallel::tests_unsigned::{
     nb_tests_for_params, nb_unchecked_tests_for_params, CpuFunctionExecutor,
 };
-use crate::integer::tests::create_parametrized_test;
+use crate::integer::tests::create_parameterized_test;
 use crate::integer::{IntegerKeyKind, RadixClientKey, ServerKey, SignedRadixCiphertext};
 #[cfg(tarpaulin)]
 use crate::shortint::parameters::coverage_parameters::*;
+use crate::shortint::parameters::test_params::*;
 use crate::shortint::parameters::*;
 use rand::Rng;
 use std::sync::Arc;
 
-create_parametrized_test!(integer_signed_unchecked_bitand);
-create_parametrized_test!(integer_signed_unchecked_bitor);
-create_parametrized_test!(integer_signed_unchecked_bitxor);
-create_parametrized_test!(integer_signed_default_bitnot);
-create_parametrized_test!(integer_signed_default_bitand);
-create_parametrized_test!(integer_signed_default_bitor);
-create_parametrized_test!(integer_signed_default_bitxor);
+create_parameterized_test!(integer_signed_unchecked_bitand);
+create_parameterized_test!(integer_signed_unchecked_bitor);
+create_parameterized_test!(integer_signed_unchecked_bitxor);
+create_parameterized_test!(integer_signed_default_bitnot);
+create_parameterized_test!(integer_signed_default_bitand);
+create_parameterized_test!(integer_signed_default_bitor);
+create_parameterized_test!(integer_signed_default_bitxor);
 
 fn integer_signed_unchecked_bitand<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_bitand_parallelized);
     signed_unchecked_bitand_test(param, executor);
@@ -33,7 +34,7 @@ where
 
 fn integer_signed_unchecked_bitor<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_bitor_parallelized);
     signed_unchecked_bitor_test(param, executor);
@@ -41,7 +42,7 @@ where
 
 fn integer_signed_unchecked_bitxor<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_bitxor_parallelized);
     signed_unchecked_bitxor_test(param, executor);
@@ -49,7 +50,7 @@ where
 
 fn integer_signed_default_bitnot<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::bitnot);
     signed_default_bitnot_test(param, executor);
@@ -57,7 +58,7 @@ where
 
 fn integer_signed_default_bitand<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::bitand_parallelized);
     signed_default_bitand_test(param, executor);
@@ -65,7 +66,7 @@ where
 
 fn integer_signed_default_bitor<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::bitor_parallelized);
     signed_default_bitor_test(param, executor);
@@ -73,14 +74,14 @@ where
 
 fn integer_signed_default_bitxor<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::bitxor_parallelized);
     signed_default_bitxor_test(param, executor);
 }
 pub(crate) fn signed_unchecked_bitand_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a SignedRadixCiphertext, &'a SignedRadixCiphertext),
         SignedRadixCiphertext,
@@ -113,7 +114,7 @@ where
 
 pub(crate) fn signed_unchecked_bitor_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a SignedRadixCiphertext, &'a SignedRadixCiphertext),
         SignedRadixCiphertext,
@@ -146,7 +147,7 @@ where
 
 pub(crate) fn signed_unchecked_bitxor_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a SignedRadixCiphertext, &'a SignedRadixCiphertext),
         SignedRadixCiphertext,
@@ -179,7 +180,7 @@ where
 
 pub(crate) fn signed_default_bitnot_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<&'a SignedRadixCiphertext, SignedRadixCiphertext>,
 {
     let param = param.into();
@@ -212,7 +213,7 @@ where
 
 pub(crate) fn signed_default_bitand_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a SignedRadixCiphertext, &'a SignedRadixCiphertext),
         SignedRadixCiphertext,
@@ -269,7 +270,7 @@ where
 
 pub(crate) fn signed_default_bitor_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a SignedRadixCiphertext, &'a SignedRadixCiphertext),
         SignedRadixCiphertext,
@@ -326,7 +327,7 @@ where
 
 pub(crate) fn signed_default_bitxor_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a SignedRadixCiphertext, &'a SignedRadixCiphertext),
         SignedRadixCiphertext,

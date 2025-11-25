@@ -11,7 +11,7 @@
 //! due to the huge difference between clear computation and FHE computation
 //! it is absolutely worth to compute the approximation of the inverse.
 use crate::core_crypto::prelude::{CastFrom, CastInto, Numeric, SignedNumeric, UnsignedInteger};
-use crate::integer::bigint::{StaticUnsignedBigInt, U1024, U2048, U4096};
+use crate::integer::bigint::{StaticUnsignedBigInt, I1024, I2048, I4096, U1024, U2048, U4096};
 use crate::integer::block_decomposition::DecomposableInto;
 use crate::integer::ciphertext::{RadixCiphertext, SignedRadixCiphertext};
 use crate::integer::server_key::radix::scalar_mul::ScalarMultiplier;
@@ -42,6 +42,8 @@ pub trait MiniUnsignedInteger:
     fn ilog2(self) -> u32;
 
     fn is_power_of_two(self) -> bool;
+
+    fn wrapping_sub(self, other: Self) -> Self;
 }
 
 impl<T> MiniUnsignedInteger for T
@@ -59,6 +61,10 @@ where
     fn is_power_of_two(self) -> bool {
         <T as UnsignedInteger>::is_power_of_two(self)
     }
+
+    fn wrapping_sub(self, other: Self) -> Self {
+        <T as UnsignedInteger>::wrapping_sub(self, other)
+    }
 }
 
 impl<const N: usize> MiniUnsignedInteger for StaticUnsignedBigInt<N> {
@@ -72,6 +78,10 @@ impl<const N: usize> MiniUnsignedInteger for StaticUnsignedBigInt<N> {
 
     fn is_power_of_two(self) -> bool {
         self.is_power_of_two()
+    }
+
+    fn wrapping_sub(self, other: Self) -> Self {
+        self.wrapping_sub(other)
     }
 }
 
@@ -135,6 +145,7 @@ pub trait SignedReciprocable:
     type DoublePrecision: DecomposableInto<u8>
         + ScalarMultiplier
         + CastFrom<<Self::Unsigned as Reciprocable>::DoublePrecision>
+        + CastInto<u64>
         + std::fmt::Debug;
 
     fn wrapping_abs(self) -> Self;
@@ -194,6 +205,36 @@ impl SignedReciprocable for I256 {
     type Unsigned = U256;
 
     type DoublePrecision = I512;
+
+    fn wrapping_abs(self) -> Self {
+        self.wrapping_abs()
+    }
+}
+
+impl SignedReciprocable for I512 {
+    type Unsigned = U512;
+
+    type DoublePrecision = I1024;
+
+    fn wrapping_abs(self) -> Self {
+        self.wrapping_abs()
+    }
+}
+
+impl SignedReciprocable for I1024 {
+    type Unsigned = U1024;
+
+    type DoublePrecision = I2048;
+
+    fn wrapping_abs(self) -> Self {
+        self.wrapping_abs()
+    }
+}
+
+impl SignedReciprocable for I2048 {
+    type Unsigned = U2048;
+
+    type DoublePrecision = I4096;
 
     fn wrapping_abs(self) -> Self {
         self.wrapping_abs()
@@ -495,8 +536,9 @@ impl ServerKey {
                     // The subtraction may overflow.
                     // We then cast the result to a signed type.
                     // Overall, this will work fine due to two's complement representation
-                    let cst = chosen_multiplier.multiplier
-                        - (<T::Unsigned as Reciprocable>::DoublePrecision::ONE << numerator_bits);
+                    let cst = chosen_multiplier.multiplier.wrapping_sub(
+                        <T::Unsigned as Reciprocable>::DoublePrecision::ONE << numerator_bits,
+                    );
                     let cst = T::DoublePrecision::cast_from(cst);
 
                     // MULSH(m - 2^N, n)
@@ -737,13 +779,13 @@ impl ServerKey {
                 let divisor_sign_bit_is_set = u64::from(divisor < T::ZERO);
                 let sign_bit_pos = self.key.message_modulus.0.ilog2() - 1;
                 let lut = self.key.generate_lookup_table(|x| {
-                    let x = x % self.key.message_modulus.0 as u64;
+                    let x = x % self.key.message_modulus.0;
                     let numerator_sign_bit_is_set = (x >> sign_bit_pos) & 1;
                     let numerator_and_divisor_sign_differs =
                         numerator_sign_bit_is_set != divisor_sign_bit_is_set;
 
                     if numerator_and_divisor_sign_differs {
-                        self.key.message_modulus.0 as u64 - 1
+                        self.key.message_modulus.0 - 1
                     } else {
                         0
                     }
@@ -1094,7 +1136,7 @@ mod tests {
 
         // signed usage example
         let chosen = choose_multiplier(3u64, 31, 32);
-        assert_eq!(chosen.multiplier, ((1u128 << 32) + 2) / 3);
+        assert_eq!(chosen.multiplier, (1u128 << 32).div_ceil(3));
         assert_eq!(chosen.shift_post, 0);
     }
 }

@@ -1,5 +1,5 @@
 use crate::integer::ciphertext::IntegerRadixCiphertext;
-use crate::integer::ServerKey;
+use crate::integer::{BooleanBlock, ServerKey};
 
 impl ServerKey {
     /// Homomorphically computes the opposite of a ciphertext encrypting an integer message.
@@ -10,11 +10,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 1u64;
     ///
@@ -56,16 +56,16 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 1u64;
     ///
     /// // Encrypt two messages:
-    /// let mut ctxt = cks.encrypt(msg);
+    /// let ctxt = cks.encrypt(msg);
     ///
     /// // Compute homomorphically a negation
     /// let ct_res = sks.neg_parallelized(&ctxt);
@@ -78,8 +78,29 @@ impl ServerKey {
     where
         T: IntegerRadixCiphertext,
     {
+        if ctxt.block_carries_are_empty() {
+            let mut result = self.bitnot(ctxt);
+            self.scalar_add_assign_parallelized(&mut result, 1);
+            result
+        } else if self.is_neg_possible(ctxt).is_ok() {
+            let mut result = self.unchecked_neg(ctxt);
+            self.full_propagate_parallelized(&mut result);
+            result
+        } else {
+            let mut cleaned_ctxt = ctxt.clone();
+            self.full_propagate_parallelized(&mut cleaned_ctxt);
+            self.neg_parallelized(&cleaned_ctxt)
+        }
+    }
+
+    pub fn overflowing_neg_parallelized<T>(&self, ctxt: &T) -> (T, BooleanBlock)
+    where
+        T: IntegerRadixCiphertext,
+    {
         let mut tmp_ctxt;
 
+        // As we want to compute the overflow we need a truly clean state
+        // And so we cannot avoid the full_propagate like we may in non overflowing_block
         let ct = if ctxt.block_carries_are_empty() {
             ctxt
         } else {
@@ -88,14 +109,19 @@ impl ServerKey {
             &tmp_ctxt
         };
 
-        if self.is_eligible_for_parallel_single_carry_propagation(ct) {
-            let mut ct = self.unchecked_neg(ct);
-            let _carry = self.propagate_single_carry_parallelized_low_latency(ct.blocks_mut());
-            ct
-        } else {
-            let mut ct = self.unchecked_neg(ct);
-            self.full_propagate_parallelized(&mut ct);
-            ct
+        let mut result = self.bitnot(ct);
+        let mut overflowed = self.overflowing_scalar_add_assign_parallelized(&mut result, 1);
+
+        if !T::IS_SIGNED {
+            // Computing overflow of !input + 1 only really works for signed integers
+            // However for unsigned integers we can still get the correct result as the only
+            // case where `!input + 1` overflows, is when `!input` == MAX (0b111..111) =>
+            // `input == 0`.
+            // And in unsigned integers, the only case that is not an overflow is -0,
+            // so we can just invert the result
+            self.boolean_bitnot_assign(&mut overflowed);
         }
+
+        (result, overflowed)
     }
 }

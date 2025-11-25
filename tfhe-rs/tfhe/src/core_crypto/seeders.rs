@@ -6,11 +6,11 @@
 
 pub use crate::core_crypto::commons::math::random::Seeder;
 #[cfg(all(target_os = "macos", not(feature = "__wasm_api")))]
-pub use concrete_csprng::seeders::AppleSecureEnclaveSeeder;
-#[cfg(feature = "seeder_x86_64_rdseed")]
-pub use concrete_csprng::seeders::RdseedSeeder;
-#[cfg(feature = "seeder_unix")]
-pub use concrete_csprng::seeders::UnixSeeder;
+pub use tfhe_csprng::seeders::AppleSecureEnclaveSeeder;
+#[cfg(all(target_arch = "x86_64", not(feature = "__wasm_api")))]
+pub use tfhe_csprng::seeders::RdseedSeeder;
+#[cfg(all(target_family = "unix", not(feature = "__wasm_api")))]
+pub use tfhe_csprng::seeders::UnixSeeder;
 
 #[cfg(feature = "__wasm_api")]
 mod wasm_seeder {
@@ -41,16 +41,15 @@ mod wasm_seeder {
 ///
 /// # Note
 ///
-/// With the `seeder_x86_64_rdseed` feature enabled on `x86_64` CPUs the rdseed seeder is
+/// When the `rdseed` CPU feature is detected on `x86_64` CPUs the rdseed seeder is
 /// prioritized.
 ///
 /// On macOS the next seeder to be prioritized uses Apple's [`Randomization
 /// Service`](`https://developer.apple.com/documentation/security/randomization_services?language=objc`)
 /// calling [`SecRandomCopyBytes`](`https://developer.apple.com/documentation/security/1399291-secrandomcopybytes?language=objc`).
 ///
-/// With the `seeder_unix` feature enabled on Unix platforms, `/dev/random` is used as a fallback
-/// and the quality of the generated seeds depends on the particular implementation of the platform
-/// your code is running on.
+/// On Unix platforms, `/dev/random` is used as a fallback and the quality of the generated seeds
+/// depends on the particular implementation of the platform your code is running on.
 ///
 /// For the wasm32 target the [`getrandom`](`https://docs.rs/getrandom/latest/getrandom/`)
 /// js random number generator is used as a source of
@@ -62,10 +61,10 @@ mod wasm_seeder {
 /// use tfhe::core_crypto::prelude::*;
 ///
 /// let mut seeder = new_seeder();
-/// let mut seeder = seeder.as_mut();
+/// let seeder = seeder.as_mut();
 ///
-/// let mut first_seed = seeder.seed();
-/// let mut second_seed = seeder.seed();
+/// let first_seed = seeder.seed();
+/// let second_seed = seeder.seed();
 /// assert_ne!(first_seed, second_seed);
 /// ```
 pub fn new_seeder() -> Box<dyn Seeder> {
@@ -75,10 +74,10 @@ pub fn new_seeder() -> Box<dyn Seeder> {
 
     #[cfg(not(feature = "__wasm_api"))]
     {
-        #[cfg(feature = "seeder_x86_64_rdseed")]
+        #[cfg(target_arch = "x86_64")]
         {
             if RdseedSeeder::is_available() {
-                seeder = Some(Box::new(RdseedSeeder));
+                seeder = Some(Box::new(RdseedSeeder::new()));
             }
         }
 
@@ -91,23 +90,14 @@ pub fn new_seeder() -> Box<dyn Seeder> {
             }
         }
 
-        #[cfg(feature = "seeder_unix")]
+        #[cfg(target_family = "unix")]
         {
             if seeder.is_none() && UnixSeeder::is_available() {
                 seeder = Some(Box::new(UnixSeeder::new(0)));
             }
         }
 
-        #[cfg(not(feature = "__c_api"))]
-        {
-            err_msg = "Unable to instantiate a seeder, make sure to enable a seeder feature \
-    like seeder_unix for example on unix platforms.";
-        }
-
-        #[cfg(feature = "__c_api")]
-        {
-            err_msg = "No compatible seeder for current machine found.";
-        }
+        err_msg = "No compatible seeder for current machine found.";
     }
 
     #[cfg(feature = "__wasm_api")]

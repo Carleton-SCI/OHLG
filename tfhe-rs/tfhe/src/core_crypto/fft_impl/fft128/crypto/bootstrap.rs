@@ -1,5 +1,6 @@
 use super::super::math::fft::{Fft128, Fft128View};
 use super::ggsw::{cmux, cmux_scratch};
+use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::algorithms::extract_lwe_sample_from_glwe_ciphertext;
 use crate::core_crypto::algorithms::polynomial_algorithms::*;
 use crate::core_crypto::backward_compatibility::fft_impl::Fourier128LweBootstrapKeyVersions;
@@ -13,14 +14,18 @@ use crate::core_crypto::commons::parameters::{
 use crate::core_crypto::commons::traits::{
     Container, ContiguousEntityContainer, ContiguousEntityContainerMut, Split,
 };
-use crate::core_crypto::commons::utils::izip;
+use crate::core_crypto::commons::utils::izip_eq;
+use crate::core_crypto::entities::ggsw_ciphertext::fourier_ggsw_ciphertext_size;
 use crate::core_crypto::entities::*;
-use crate::core_crypto::fft_impl::common::{pbs_modulus_switch, FourierBootstrapKey};
-use crate::core_crypto::prelude::ContainerMut;
+use crate::core_crypto::fft_impl::common::FourierBootstrapKey;
+use crate::core_crypto::fft_impl::fft64::crypto::bootstrap::LweBootstrapKeyConformanceParams;
+use crate::core_crypto::prelude::{
+    lwe_ciphertext_modulus_switch, ContainerMut, ModulusSwitchedLweCiphertext,
+};
 use aligned_vec::{avec, ABox, CACHELINE_ALIGN};
 use core::any::TypeId;
 use core::mem::transmute;
-use dyn_stack::{PodStack, ReborrowMut, SizeOverflow, StackReq};
+use dyn_stack::{PodStack, SizeOverflow, StackReq};
 use tfhe_versionable::Versionize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Versionize)]
@@ -73,11 +78,14 @@ impl<C: Container<Element = f64>> Fourier128LweBootstrapKey<C> {
     }
 
     /// Return an iterator over the GGSW ciphertexts composing the key.
-    pub fn into_ggsw_iter(self) -> impl DoubleEndedIterator<Item = Fourier128GgswCiphertext<C>>
+    pub fn into_ggsw_iter(
+        self,
+    ) -> impl DoubleEndedIterator<Item = Fourier128GgswCiphertext<C>>
+           + ExactSizeIterator<Item = Fourier128GgswCiphertext<C>>
     where
         C: Split,
     {
-        izip!(
+        izip_eq!(
             self.data_re0.split_into(self.input_lwe_dimension.0),
             self.data_re1.split_into(self.input_lwe_dimension.0),
             self.data_im0.split_into(self.input_lwe_dimension.0),
@@ -211,7 +219,9 @@ where
             coef_bsk: LweBootstrapKey<&[Scalar]>,
             fft: Fft128View<'_>,
         ) {
-            for (mut fourier_ggsw, standard_ggsw) in izip!(this.into_ggsw_iter(), coef_bsk.iter()) {
+            for (mut fourier_ggsw, standard_ggsw) in
+                izip_eq!(this.into_ggsw_iter(), coef_bsk.iter())
+            {
                 fourier_ggsw.fill_with_forward_fourier(&standard_ggsw, fft);
             }
         }
@@ -244,39 +254,37 @@ impl<Cont> Fourier128LweBootstrapKey<Cont>
 where
     Cont: Container<Element = f64>,
 {
-    // CastInto required for PBS modulus switch which returns a usize
-    pub fn blind_rotate_assign<Scalar, ContLut, ContLwe>(
+    pub fn blind_rotate_assign<OutputScalar, ContLut>(
         &self,
         lut: &mut GlweCiphertext<ContLut>,
-        lwe: &LweCiphertext<ContLwe>,
+        msed_lwe: &impl ModulusSwitchedLweCiphertext<usize>,
         fft: Fft128View<'_>,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) where
-        Scalar: UnsignedTorus + CastInto<usize>,
-        ContLut: ContainerMut<Element = Scalar>,
-        ContLwe: Container<Element = Scalar>,
+        OutputScalar: UnsignedTorus,
+        ContLut: ContainerMut<Element = OutputScalar>,
     {
-        fn implementation<Scalar: UnsignedTorus + CastInto<usize>>(
+        fn implementation<OutputScalar>(
             this: Fourier128LweBootstrapKey<&[f64]>,
-            mut lut: GlweCiphertext<&mut [Scalar]>,
-            lwe: LweCiphertext<&[Scalar]>,
+            mut lut: GlweCiphertext<&mut [OutputScalar]>,
+            msed_lwe: &impl ModulusSwitchedLweCiphertext<usize>,
             fft: Fft128View<'_>,
-            mut stack: PodStack<'_>,
-        ) {
-            let lwe = lwe.as_ref();
-            let (lwe_body, lwe_mask) = lwe.split_last().unwrap();
+            stack: &mut PodStack,
+        ) where
+            OutputScalar: UnsignedTorus,
+        {
+            let msed_lwe_mask = msed_lwe.mask();
+            let msed_lwe_body = msed_lwe.body();
 
-            let lut_poly_size = lut.polynomial_size();
             let ciphertext_modulus = lut.ciphertext_modulus();
             assert!(ciphertext_modulus.is_compatible_with_native_modulus());
-            let monomial_degree = pbs_modulus_switch(*lwe_body, lut_poly_size);
 
             lut.as_mut_polynomial_list()
                 .iter_mut()
                 .for_each(|mut poly| {
                     polynomial_wrapping_monic_monomial_div_assign(
                         &mut poly,
-                        MonomialDegree(monomial_degree),
+                        MonomialDegree(msed_lwe_body),
                     );
                 });
 
@@ -284,15 +292,15 @@ where
             let mut ct0 = lut;
 
             for (lwe_mask_element, bootstrap_key_ggsw) in
-                izip!(lwe_mask.iter(), this.into_ggsw_iter())
+                izip_eq!(msed_lwe_mask, this.into_ggsw_iter())
             {
-                if *lwe_mask_element != Scalar::ZERO {
-                    let stack = stack.rb_mut();
+                if lwe_mask_element != 0 {
+                    let stack = &mut *stack;
                     // We copy ct_0 to ct_1
-                    let (mut ct1, stack) =
+                    let (ct1, stack) =
                         stack.collect_aligned(CACHELINE_ALIGN, ct0.as_ref().iter().copied());
                     let mut ct1 = GlweCiphertextMutView::from_container(
-                        &mut *ct1,
+                        ct1,
                         ct0.polynomial_size(),
                         ct0.ciphertext_modulus(),
                     );
@@ -301,7 +309,7 @@ where
                     for mut poly in ct1.as_mut_polynomial_list().iter_mut() {
                         polynomial_wrapping_monic_monomial_mul_assign(
                             &mut poly,
-                            MonomialDegree(pbs_modulus_switch(*lwe_mask_element, lut_poly_size)),
+                            MonomialDegree(lwe_mask_element),
                         );
                     }
 
@@ -326,49 +334,81 @@ where
                     .for_each(|x| *x = signed_decomposer.closest_representable(*x));
             }
         }
-        implementation(self.as_view(), lut.as_mut_view(), lwe.as_view(), fft, stack);
+        implementation(self.as_view(), lut.as_mut_view(), msed_lwe, fft, stack);
     }
 
-    pub fn bootstrap<Scalar, ContLweOut, ContLweIn, ContAcc>(
+    pub fn bootstrap<InputScalar, OutputScalar, ContLweOut, ContLweIn, ContAcc>(
         &self,
         lwe_out: &mut LweCiphertext<ContLweOut>,
         lwe_in: &LweCiphertext<ContLweIn>,
         accumulator: &GlweCiphertext<ContAcc>,
         fft: Fft128View<'_>,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) where
         // CastInto required for PBS modulus switch which returns a usize
-        Scalar: UnsignedTorus + CastInto<usize>,
-        ContLweOut: ContainerMut<Element = Scalar>,
-        ContLweIn: Container<Element = Scalar>,
-        ContAcc: Container<Element = Scalar>,
+        InputScalar: UnsignedTorus + CastInto<usize>,
+        OutputScalar: UnsignedTorus,
+        ContLweOut: ContainerMut<Element = OutputScalar>,
+        ContLweIn: Container<Element = InputScalar>,
+        ContAcc: Container<Element = OutputScalar>,
     {
-        fn implementation<Scalar: UnsignedTorus + CastInto<usize>>(
+        let log_modulus = accumulator
+            .polynomial_size()
+            .to_blind_rotation_input_modulus_log();
+
+        let lwe_in = lwe_in.as_view();
+
+        let lwe_in_msed = lwe_ciphertext_modulus_switch(lwe_in.as_view(), log_modulus);
+
+        self.blind_rotate(lwe_out, &lwe_in_msed, accumulator, fft, stack);
+    }
+
+    pub fn blind_rotate<OutputScalar, ContLweOut, ContAcc>(
+        &self,
+        lwe_out: &mut LweCiphertext<ContLweOut>,
+        msed_lwe_in: &impl ModulusSwitchedLweCiphertext<usize>,
+        accumulator: &GlweCiphertext<ContAcc>,
+        fft: Fft128View<'_>,
+        stack: &mut PodStack,
+    ) where
+        OutputScalar: UnsignedTorus,
+        ContLweOut: ContainerMut<Element = OutputScalar>,
+        ContAcc: Container<Element = OutputScalar>,
+    {
+        fn implementation<OutputScalar>(
             this: Fourier128LweBootstrapKey<&[f64]>,
-            mut lwe_out: LweCiphertext<&mut [Scalar]>,
-            lwe_in: LweCiphertext<&[Scalar]>,
-            accumulator: GlweCiphertext<&[Scalar]>,
+            mut lwe_out: LweCiphertext<&mut [OutputScalar]>,
+            msed_lwe_in: &impl ModulusSwitchedLweCiphertext<usize>,
+            accumulator: GlweCiphertext<&[OutputScalar]>,
             fft: Fft128View<'_>,
-            stack: PodStack<'_>,
-        ) {
+            stack: &mut PodStack,
+        ) where
+            OutputScalar: UnsignedTorus,
+        {
             // We type check dynamically with TypeId
             #[allow(clippy::transmute_undefined_repr)]
-            if TypeId::of::<Scalar>() == TypeId::of::<u128>() {
+            if TypeId::of::<OutputScalar>() == TypeId::of::<u128>() {
                 let mut lwe_out: LweCiphertext<&mut [u128]> = unsafe { transmute(lwe_out) };
-                let lwe_in: LweCiphertext<&[u128]> = unsafe { transmute(lwe_in) };
                 let accumulator: GlweCiphertext<&[u128]> = unsafe { transmute(accumulator) };
 
-                return this.bootstrap_u128(&mut lwe_out, &lwe_in, &accumulator, fft, stack);
+                return this.blind_rotate_u128(&mut lwe_out, msed_lwe_in, &accumulator, fft, stack);
             }
 
-            let (mut local_accumulator_data, stack) =
+            let (local_accumulator_data, stack) =
                 stack.collect_aligned(CACHELINE_ALIGN, accumulator.as_ref().iter().copied());
             let mut local_accumulator = GlweCiphertextMutView::from_container(
-                &mut *local_accumulator_data,
+                local_accumulator_data,
                 accumulator.polynomial_size(),
                 accumulator.ciphertext_modulus(),
             );
-            this.blind_rotate_assign(&mut local_accumulator.as_mut_view(), &lwe_in, fft, stack);
+
+            this.blind_rotate_assign(
+                &mut local_accumulator.as_mut_view(),
+                msed_lwe_in,
+                fft,
+                stack,
+            );
+
             extract_lwe_sample_from_glwe_ciphertext(
                 &local_accumulator,
                 &mut lwe_out,
@@ -379,7 +419,7 @@ where
         implementation(
             self.as_view(),
             lwe_out.as_mut_view(),
-            lwe_in.as_view(),
+            msed_lwe_in,
             accumulator.as_view(),
             fft,
             stack,
@@ -417,7 +457,7 @@ where
         &mut self,
         coef_bsk: &LweBootstrapKey<ContBsk>,
         fft: &Self::Fft,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) where
         ContBsk: Container<Element = Scalar>,
     {
@@ -440,7 +480,7 @@ where
         lwe_in: &LweCiphertext<ContLweIn>,
         accumulator: &GlweCiphertext<ContAcc>,
         fft: &Self::Fft,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) where
         ContLweOut: ContainerMut<Element = Scalar>,
         ContLweIn: Container<Element = Scalar>,
@@ -452,5 +492,43 @@ where
     fn fill_with_forward_fourier_scratch(fft: &Self::Fft) -> Result<StackReq, SizeOverflow> {
         let _ = fft;
         Ok(StackReq::empty())
+    }
+}
+
+impl<Cont> ParameterSetConformant for Fourier128LweBootstrapKey<Cont>
+where
+    Cont: ContainerMut<Element = f64>,
+{
+    type ParameterSet = LweBootstrapKeyConformanceParams<u128>;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self {
+            data_re0,
+            data_re1,
+            data_im0,
+            data_im1,
+            polynomial_size,
+            input_lwe_dimension,
+            glwe_size,
+            decomposition_base_log,
+            decomposition_level_count,
+        } = self;
+
+        let expected_container_len = parameter_set.input_lwe_dimension.0
+            * fourier_ggsw_ciphertext_size(
+                parameter_set.output_glwe_size,
+                parameter_set.polynomial_size.to_fourier_polynomial_size(),
+                parameter_set.decomp_level_count,
+            );
+
+        data_re0.container_len() == expected_container_len
+            && data_re1.container_len() == expected_container_len
+            && data_im0.container_len() == expected_container_len
+            && data_im1.container_len() == expected_container_len
+            && *polynomial_size == parameter_set.polynomial_size
+            && *input_lwe_dimension == parameter_set.input_lwe_dimension
+            && *glwe_size == parameter_set.output_glwe_size
+            && *decomposition_base_log == parameter_set.decomp_base_log
+            && *decomposition_level_count == parameter_set.decomp_level_count
     }
 }

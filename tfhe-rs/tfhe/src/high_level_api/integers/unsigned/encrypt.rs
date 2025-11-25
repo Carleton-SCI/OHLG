@@ -1,9 +1,8 @@
 use crate::core_crypto::prelude::UnsignedNumeric;
 use crate::high_level_api::global_state;
-#[cfg(feature = "gpu")]
-use crate::high_level_api::global_state::with_thread_local_cuda_streams;
 use crate::high_level_api::integers::FheUintId;
 use crate::high_level_api::keys::InternalServerKey;
+use crate::high_level_api::re_randomization::ReRandomizationMetadata;
 use crate::integer::block_decomposition::{DecomposableInto, RecomposableFrom};
 #[cfg(feature = "gpu")]
 use crate::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext;
@@ -54,7 +53,11 @@ where
             .key
             .key
             .encrypt_radix(value, Id::num_blocks(key.message_modulus()));
-        let mut ciphertext = Self::new(cpu_ciphertext);
+        let mut ciphertext = Self::new(
+            cpu_ciphertext,
+            key.tag.clone(),
+            ReRandomizationMetadata::default(),
+        );
 
         ciphertext.move_to_device_of_server_key_if_set();
 
@@ -73,7 +76,11 @@ where
         let cpu_ciphertext = key
             .key
             .encrypt_radix(value, Id::num_blocks(key.message_modulus()));
-        let mut ciphertext = Self::new(cpu_ciphertext);
+        let mut ciphertext = Self::new(
+            cpu_ciphertext,
+            key.tag.clone(),
+            ReRandomizationMetadata::default(),
+        );
 
         ciphertext.move_to_device_of_server_key_if_set();
 
@@ -92,7 +99,11 @@ where
         let cpu_ciphertext = key
             .key
             .encrypt_radix(value, Id::num_blocks(key.message_modulus()));
-        let mut ciphertext = Self::new(cpu_ciphertext);
+        let mut ciphertext = Self::new(
+            cpu_ciphertext,
+            key.tag.clone(),
+            ReRandomizationMetadata::default(),
+        );
 
         ciphertext.move_to_device_of_server_key_if_set();
         Ok(ciphertext)
@@ -112,17 +123,30 @@ where
                 let ciphertext: crate::integer::RadixCiphertext = key
                     .pbs_key()
                     .create_trivial_radix(value, Id::num_blocks(key.message_modulus()));
-                Ok(Self::new(ciphertext))
+                Ok(Self::new(
+                    ciphertext,
+                    key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                ))
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(cuda_key) => with_thread_local_cuda_streams(|streams| {
-                let inner: CudaUnsignedRadixCiphertext = cuda_key.key.create_trivial_radix(
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let inner: CudaUnsignedRadixCiphertext = cuda_key.key.key.create_trivial_radix(
                     value,
-                    Id::num_blocks(cuda_key.key.message_modulus),
+                    Id::num_blocks(cuda_key.key.key.message_modulus),
                     streams,
                 );
-                Ok(Self::new(inner))
-            }),
+                Ok(Self::new(
+                    inner,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                ))
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support trivial encryption")
+            }
         })
     }
 }

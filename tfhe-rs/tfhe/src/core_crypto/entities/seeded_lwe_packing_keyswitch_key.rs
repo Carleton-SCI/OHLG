@@ -1,13 +1,14 @@
 //! Module containing the definition of the [`SeededLwePackingKeyswitchKey`].
 
-use tfhe_versionable::Versionize;
-
+use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::algorithms::*;
 use crate::core_crypto::backward_compatibility::entities::seeded_lwe_packing_keyswitch_key::SeededLwePackingKeyswitchKeyVersions;
-use crate::core_crypto::commons::math::random::{ActivatedRandomGenerator, CompressionSeed};
+use crate::core_crypto::commons::generators::MaskRandomGenerator;
+use crate::core_crypto::commons::math::random::{CompressionSeed, DefaultRandomGenerator};
 use crate::core_crypto::commons::parameters::*;
 use crate::core_crypto::commons::traits::*;
 use crate::core_crypto::entities::*;
+use tfhe_versionable::Versionize;
 
 /// A [`seeded LWE packing keyswitch key`](`SeededLwePackingKeyswitchKey`).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Versionize)]
@@ -296,10 +297,39 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> SeededLwePackingKe
             self.output_key_polynomial_size(),
             self.ciphertext_modulus(),
         );
-        decompress_seeded_lwe_packing_keyswitch_key::<_, _, _, ActivatedRandomGenerator>(
+        decompress_seeded_lwe_packing_keyswitch_key::<_, _, _, DefaultRandomGenerator>(
             &mut decompressed_pksk,
             &self,
         );
+        decompressed_pksk
+    }
+
+    /// Decompress the [`SeededLwePackingKeyswitchKey`] into [`LwePackingKeyswitchKey`]
+    /// without consuming `self`
+    pub fn decompress_to_lwe_packing_keyswitch_key_with_pre_seeded_generator<Gen>(
+        &self,
+        generator: &mut MaskRandomGenerator<Gen>,
+    ) -> LwePackingKeyswitchKeyOwned<Scalar>
+    where
+        Scalar: UnsignedTorus,
+        Gen: ByteRandomGenerator,
+    {
+        let mut decompressed_pksk = LwePackingKeyswitchKeyOwned::new(
+            Scalar::ZERO,
+            self.decomposition_base_log(),
+            self.decomposition_level_count(),
+            self.input_key_lwe_dimension(),
+            self.output_key_glwe_dimension(),
+            self.output_key_polynomial_size(),
+            self.ciphertext_modulus(),
+        );
+
+        decompress_seeded_lwe_packing_keyswitch_key_with_pre_seeded_generator(
+            &mut decompressed_pksk,
+            self,
+            generator,
+        );
+
         decompressed_pksk
     }
 
@@ -406,7 +436,8 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 
     type EntityViewMetadata = SeededGlweCiphertextListCreationMetadata<Self::Element>;
 
-    type EntityView<'this> = SeededGlweCiphertextListView<'this, Self::Element>
+    type EntityView<'this>
+        = SeededGlweCiphertextListView<'this, Self::Element>
     where
         Self: 'this;
 
@@ -414,7 +445,8 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 
     // At the moment it does not make sense to return "sub" keyswitch keys. So we use a dummy
     // placeholder type here.
-    type SelfView<'this> = DummyCreateFrom
+    type SelfView<'this>
+        = DummyCreateFrom
     where
         Self: 'this;
 
@@ -446,13 +478,44 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 impl<Scalar: UnsignedInteger, C: ContainerMut<Element = Scalar>> ContiguousEntityContainerMut
     for SeededLwePackingKeyswitchKey<C>
 {
-    type EntityMutView<'this> = SeededGlweCiphertextListMutView<'this, Self::Element>
+    type EntityMutView<'this>
+        = SeededGlweCiphertextListMutView<'this, Self::Element>
     where
         Self: 'this;
 
     // At the moment it does not make sense to return "sub" keyswitch keys. So we use a dummy
     // placeholder type here.
-    type SelfMutView<'this> = DummyCreateFrom
+    type SelfMutView<'this>
+        = DummyCreateFrom
     where
         Self: 'this;
+}
+
+impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ParameterSetConformant
+    for SeededLwePackingKeyswitchKey<C>
+{
+    type ParameterSet = LwePackingKeyswitchKeyConformanceParams<Scalar>;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self {
+            data,
+            decomp_base_log,
+            decomp_level_count,
+            output_glwe_size,
+            output_polynomial_size,
+            ciphertext_modulus,
+            compression_seed: _,
+        } = self;
+
+        data.container_len()
+            == seeded_lwe_packing_keyswitch_key_input_key_element_encrypted_size(
+                *decomp_level_count,
+                *output_polynomial_size,
+            ) * parameter_set.input_lwe_dimension.0
+            && *decomp_base_log == parameter_set.decomp_base_log
+            && *decomp_level_count == parameter_set.decomp_level_count
+            && *output_glwe_size == parameter_set.output_glwe_size
+            && *output_polynomial_size == parameter_set.output_polynomial_size
+            && *ciphertext_modulus == parameter_set.ciphertext_modulus
+    }
 }

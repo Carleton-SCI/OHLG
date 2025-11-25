@@ -1,4 +1,4 @@
-use crate::core_crypto::commons::utils::izip;
+use crate::core_crypto::commons::utils::izip_eq;
 use crate::core_crypto::prelude::CastFrom;
 use crate::integer::ciphertext::RadixCiphertext;
 use crate::integer::ServerKey;
@@ -13,21 +13,21 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 16;
     /// let shift = 2;
     ///
     /// // Encrypt two messages:
-    /// let mut ct = cks.encrypt(msg);
+    /// let ct = cks.encrypt(msg);
     ///
     /// let ct_res = sks.blockshift_right(&ct, shift);
     ///
-    /// let div = cks.parameters().message_modulus().0.pow(shift as u32) as u64;
+    /// let div = cks.parameters().message_modulus().0.pow(shift as u32);
     ///
     /// // Decrypt:
     /// let clear = cks.decrypt(&ct_res);
@@ -60,11 +60,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 128u64;
     /// let shift = 2;
@@ -96,11 +96,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 18u64;
     /// let shift = 4;
@@ -147,7 +147,7 @@ impl ServerKey {
             return;
         }
 
-        let message_modulus = self.key.message_modulus.0 as u64;
+        let message_modulus = self.key.message_modulus.0;
         let lut = self
             .key
             .generate_lookup_table_bivariate(|current_block, mut previous_block| {
@@ -186,7 +186,7 @@ impl ServerKey {
         // and did the last one separately
         let blocks_to_replace = &mut ct.blocks[..num_blocks - rotations - 1];
         assert_eq!(partial_blocks.len(), blocks_to_replace.len());
-        for (block, shifted_block) in izip!(blocks_to_replace, partial_blocks) {
+        for (block, shifted_block) in izip_eq!(blocks_to_replace, partial_blocks) {
             *block = shifted_block;
         }
         debug_assert!(ct.block_carries_are_empty());
@@ -200,18 +200,18 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 21u64;
     /// let shift = 2;
     ///
     /// let ct1 = cks.encrypt(msg);
     ///
-    /// // Compute homomorphically a right shift:
+    /// // Compute homomorphically a left shift:
     /// let ct_res = sks.unchecked_scalar_left_shift(&ct1, shift);
     ///
     /// // Decrypt:
@@ -249,11 +249,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 13u64;
     /// let shift = 2;
@@ -305,8 +305,8 @@ impl ServerKey {
                 let current_block = current_block << shift_within_block;
                 let previous_block = previous_block << shift_within_block;
 
-                let message_of_current_block = current_block % self.key.message_modulus.0 as u64;
-                let carry_of_previous_block = previous_block / self.key.message_modulus.0 as u64;
+                let message_of_current_block = current_block % self.key.message_modulus.0;
+                let carry_of_previous_block = previous_block / self.key.message_modulus.0;
                 message_of_current_block + carry_of_previous_block
             });
         let partial_blocks = ct.blocks[rotations..]
@@ -330,7 +330,7 @@ impl ServerKey {
         // and did the last one separately
         let blocks_to_replace = &mut ct.blocks[rotations + 1..];
         assert_eq!(partial_blocks.len(), blocks_to_replace.len());
-        for (block, shifted_block) in izip!(blocks_to_replace, partial_blocks) {
+        for (block, shifted_block) in izip_eq!(blocks_to_replace, partial_blocks) {
             *block = shifted_block;
         }
         debug_assert!(ct.block_carries_are_empty());

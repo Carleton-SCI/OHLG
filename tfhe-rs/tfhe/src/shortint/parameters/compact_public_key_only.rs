@@ -1,13 +1,13 @@
-use super::{CiphertextModulus, PBSOrder};
-use crate::core_crypto::commons::parameters::{DynamicDistribution, LweDimension};
+use crate::shortint::atomic_pattern::AtomicPatternParameters;
 use crate::shortint::backward_compatibility::parameters::compact_public_key_only::{
     CompactCiphertextListExpansionKindVersions, CompactPublicKeyEncryptionParametersVersions,
 };
 use crate::shortint::parameters::{
-    CarryModulus, ClassicPBSParameters, MessageModulus, MultiBitPBSParameters, PBSParameters,
-    ShortintParameterSet,
+    AtomicPatternKind, CarryModulus, CiphertextModulus, ClassicPBSParameters, DynamicDistribution,
+    LweDimension, MessageModulus, MultiBitPBSParameters, PBSOrder, PBSParameters,
+    ShortintParameterSet, SupportedCompactPkeZkScheme,
 };
-use crate::shortint::KeySwitchingKeyView;
+use crate::shortint::{KeySwitchingKeyView, PaddingBit, ShortintEncoding};
 use crate::Error;
 use serde::{Deserialize, Serialize};
 use tfhe_versionable::Versionize;
@@ -19,18 +19,26 @@ pub enum CompactCiphertextListExpansionKind {
     NoCasting(PBSOrder),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum CompactCiphertextListCastingMode<K> {
-    CastIfNecessary(K),
+pub type CastingFunctionsOwned<'functions> =
+    Vec<Option<Vec<&'functions (dyn Fn(u64) -> u64 + Sync)>>>;
+pub type CastingFunctionsView<'functions> =
+    &'functions [Option<Vec<&'functions (dyn Fn(u64) -> u64 + Sync)>>];
+
+#[derive(Clone, Copy)]
+pub enum ShortintCompactCiphertextListCastingMode<'a> {
+    CastIfNecessary {
+        casting_key: KeySwitchingKeyView<'a>,
+        functions: Option<CastingFunctionsView<'a>>,
+    },
     NoCasting,
 }
 
-pub type ShortintCompactCiphertextListCastingMode<'key> =
-    CompactCiphertextListCastingMode<KeySwitchingKeyView<'key>>;
-
-impl From<PBSOrder> for CompactCiphertextListExpansionKind {
-    fn from(value: PBSOrder) -> Self {
-        Self::NoCasting(value)
+impl From<AtomicPatternKind> for CompactCiphertextListExpansionKind {
+    fn from(value: AtomicPatternKind) -> Self {
+        match value {
+            AtomicPatternKind::Standard(pbsorder) => Self::NoCasting(pbsorder),
+            AtomicPatternKind::KeySwitch32 => Self::NoCasting(PBSOrder::KeyswitchBootstrap),
+        }
     }
 }
 
@@ -43,6 +51,8 @@ pub struct CompactPublicKeyEncryptionParameters {
     pub carry_modulus: CarryModulus,
     pub ciphertext_modulus: CiphertextModulus,
     pub expansion_kind: CompactCiphertextListExpansionKind,
+    // Version of the PKE zk scheme compatible with these parameters
+    pub zk_scheme: SupportedCompactPkeZkScheme,
 }
 
 impl CompactPublicKeyEncryptionParameters {
@@ -53,6 +63,7 @@ impl CompactPublicKeyEncryptionParameters {
         carry_modulus: CarryModulus,
         ciphertext_modulus: CiphertextModulus,
         output_ciphertext_kind: CompactCiphertextListExpansionKind,
+        zk_scheme: SupportedCompactPkeZkScheme,
     ) -> Result<Self, Error> {
         let parameters = Self {
             encryption_lwe_dimension,
@@ -61,6 +72,7 @@ impl CompactPublicKeyEncryptionParameters {
             carry_modulus,
             ciphertext_modulus,
             expansion_kind: output_ciphertext_kind,
+            zk_scheme,
         };
 
         if !parameters.is_valid() {
@@ -89,6 +101,15 @@ impl CompactPublicKeyEncryptionParameters {
             "Invalid CompactPublicKeyEncryptionParameters, \
             encryption_lwe_dimension is not a power of 2, which is required.",
         );
+    }
+
+    pub(crate) fn encoding(&self) -> ShortintEncoding<u64> {
+        ShortintEncoding {
+            ciphertext_modulus: self.ciphertext_modulus,
+            message_modulus: self.message_modulus,
+            carry_modulus: self.carry_modulus,
+            padding_bit: PaddingBit::Yes,
+        }
     }
 }
 
@@ -119,6 +140,8 @@ impl TryFrom<ShortintParameterSet> for CompactPublicKeyEncryptionParameters {
             carry_modulus,
             ciphertext_modulus,
             output_ciphertext_kind,
+            // Zk needs specific pke parameters
+            SupportedCompactPkeZkScheme::ZkNotSupported,
         )
     }
 }
@@ -150,13 +173,11 @@ impl TryFrom<PBSParameters> for CompactPublicKeyEncryptionParameters {
     }
 }
 
-pub const PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64: CompactPublicKeyEncryptionParameters =
-    CompactPublicKeyEncryptionParameters {
-        encryption_lwe_dimension: LweDimension(1024),
-        encryption_noise_distribution: DynamicDistribution::new_t_uniform(42),
-        message_modulus: MessageModulus(4),
-        carry_modulus: CarryModulus(4),
-        ciphertext_modulus: CiphertextModulus::new_native(),
-        expansion_kind: CompactCiphertextListExpansionKind::RequiresCasting,
+impl TryFrom<AtomicPatternParameters> for CompactPublicKeyEncryptionParameters {
+    type Error = Error;
+
+    fn try_from(value: AtomicPatternParameters) -> Result<Self, Self::Error> {
+        let params: ShortintParameterSet = value.into();
+        params.try_into()
     }
-    .validate();
+}

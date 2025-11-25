@@ -1,21 +1,25 @@
+use super::private_key::NoiseSquashingCompressionPrivateKey;
 use super::CompressionPrivateKeys;
-use crate::core_crypto::prelude::{
-    allocate_and_generate_new_lwe_packing_keyswitch_key, CiphertextModulusLog, GlweSize,
-    LweCiphertextCount, LwePackingKeyswitchKey,
-};
+use crate::conformance::ParameterSetConformant;
+use crate::core_crypto::fft_impl::fft64::crypto::bootstrap::LweBootstrapKeyConformanceParams;
+use crate::core_crypto::prelude::*;
+use crate::shortint::atomic_pattern::AtomicPatternParameters;
 use crate::shortint::backward_compatibility::list_compression::{
-    CompressionKeyVersions, DecompressionKeyVersions,
+    CompressionKeyVersions, DecompressionKeyVersions, NoiseSquashingCompressionKeyVersions,
 };
 use crate::shortint::client_key::ClientKey;
 use crate::shortint::engine::ShortintEngine;
-use crate::shortint::parameters::PolynomialSize;
-use crate::shortint::server_key::ShortintBootstrappingKey;
-use crate::shortint::{ClassicPBSParameters, EncryptionKeyChoice, PBSParameters};
+use crate::shortint::list_compression::CompressedNoiseSquashingCompressionKey;
+use crate::shortint::noise_squashing::NoiseSquashingPrivateKey;
+use crate::shortint::parameters::{
+    CompressionParameters, NoiseSquashingCompressionParameters, NoiseSquashingParameters,
+    PolynomialSize,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use tfhe_versionable::Versionize;
 
-#[derive(Clone, Debug, Serialize, Deserialize, Versionize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Versionize)]
 #[versionize(CompressionKeyVersions)]
 pub struct CompressionKey {
     pub packing_key_switching_key: LwePackingKeyswitchKey<Vec<u64>>,
@@ -23,90 +27,417 @@ pub struct CompressionKey {
     pub storage_log_modulus: CiphertextModulusLog,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Versionize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Versionize)]
 #[versionize(DecompressionKeyVersions)]
-pub struct DecompressionKey {
-    pub blind_rotate_key: ShortintBootstrappingKey,
-    pub lwe_per_glwe: LweCiphertextCount,
+pub enum DecompressionKey {
+    Classic {
+        blind_rotate_key: FourierLweBootstrapKeyOwned,
+        lwe_per_glwe: LweCiphertextCount,
+    },
+    MultiBit {
+        multi_bit_blind_rotate_key: FourierLweMultiBitBootstrapKeyOwned,
+        lwe_per_glwe: LweCiphertextCount,
+        thread_count: ThreadCount,
+    },
 }
 
 impl DecompressionKey {
     pub fn out_glwe_size(&self) -> GlweSize {
-        self.blind_rotate_key.glwe_size()
+        match self {
+            Self::Classic {
+                blind_rotate_key, ..
+            } => blind_rotate_key.glwe_size(),
+            Self::MultiBit {
+                multi_bit_blind_rotate_key,
+                ..
+            } => multi_bit_blind_rotate_key.glwe_size(),
+        }
     }
 
     pub fn out_polynomial_size(&self) -> PolynomialSize {
-        self.blind_rotate_key.polynomial_size()
+        match self {
+            Self::Classic {
+                blind_rotate_key, ..
+            } => blind_rotate_key.polynomial_size(),
+            Self::MultiBit {
+                multi_bit_blind_rotate_key,
+                ..
+            } => multi_bit_blind_rotate_key.polynomial_size(),
+        }
+    }
+
+    pub fn output_lwe_dimension(&self) -> LweDimension {
+        match self {
+            Self::Classic {
+                blind_rotate_key, ..
+            } => blind_rotate_key.output_lwe_dimension(),
+            Self::MultiBit {
+                multi_bit_blind_rotate_key,
+                ..
+            } => multi_bit_blind_rotate_key.output_lwe_dimension(),
+        }
     }
 }
 
 impl ClientKey {
+    /// Create a decompression key with different parameters than the one in the secret key.
+    ///
+    /// This allows for example to compress using cpu parameters and decompress with gpu parameters
+    pub fn new_decompression_key_with_params(
+        &self,
+        private_compression_key: &CompressionPrivateKeys,
+        compression_params: CompressionParameters,
+    ) -> DecompressionKey {
+        self.atomic_pattern
+            .new_decompression_key_with_params(private_compression_key, compression_params)
+    }
+
     pub fn new_compression_decompression_keys(
         &self,
         private_compression_key: &CompressionPrivateKeys,
     ) -> (CompressionKey, DecompressionKey) {
-        let cks_params: ClassicPBSParameters = match self.parameters.pbs_parameters().unwrap() {
-            PBSParameters::PBS(a) => a,
-            PBSParameters::MultiBitPBS(_) => {
-                panic!("Compression is currently not compatible with Multi Bit PBS")
+        (
+            self.atomic_pattern
+                .new_compression_key(private_compression_key),
+            self.atomic_pattern
+                .new_decompression_key(private_compression_key),
+        )
+    }
+}
+
+pub struct CompressionKeyConformanceParams {
+    pub br_level: DecompositionLevelCount,
+    pub br_base_log: DecompositionBaseLog,
+    pub packing_ks_level: DecompositionLevelCount,
+    pub packing_ks_base_log: DecompositionBaseLog,
+    pub packing_ks_polynomial_size: PolynomialSize,
+    pub packing_ks_glwe_dimension: GlweDimension,
+    pub lwe_per_glwe: LweCiphertextCount,
+    pub storage_log_modulus: CiphertextModulusLog,
+    pub uncompressed_polynomial_size: PolynomialSize,
+    pub uncompressed_glwe_dimension: GlweDimension,
+    pub decompression_grouping_factor: Option<LweBskGroupingFactor>,
+    pub cipherext_modulus: CiphertextModulus<u64>,
+}
+
+impl From<(AtomicPatternParameters, CompressionParameters)> for CompressionKeyConformanceParams {
+    fn from(
+        (ap_params, compression_params): (AtomicPatternParameters, CompressionParameters),
+    ) -> Self {
+        let decompression_grouping_factor = match compression_params {
+            CompressionParameters::Classic(_) => None,
+            CompressionParameters::MultiBit(multi_bit_compression_parameters) => {
+                Some(multi_bit_compression_parameters.decompression_grouping_factor)
             }
         };
 
-        let params = &private_compression_key.params;
+        Self {
+            br_level: compression_params.br_level(),
+            br_base_log: compression_params.br_base_log(),
+            packing_ks_level: compression_params.packing_ks_level(),
+            packing_ks_base_log: compression_params.packing_ks_base_log(),
+            packing_ks_polynomial_size: compression_params.packing_ks_polynomial_size(),
+            packing_ks_glwe_dimension: compression_params.packing_ks_glwe_dimension(),
+            lwe_per_glwe: compression_params.lwe_per_glwe(),
+            storage_log_modulus: compression_params.storage_log_modulus(),
+            uncompressed_polynomial_size: ap_params.polynomial_size(),
+            uncompressed_glwe_dimension: ap_params.glwe_dimension(),
+            cipherext_modulus: ap_params.ciphertext_modulus(),
+            decompression_grouping_factor,
+        }
+    }
+}
 
-        assert_eq!(
-            cks_params.encryption_key_choice,
-            EncryptionKeyChoice::Big,
-            "Compression is only compatible with ciphertext in post PBS dimension"
+impl ParameterSetConformant for CompressionKey {
+    type ParameterSet = CompressionKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self {
+            packing_key_switching_key,
+            lwe_per_glwe,
+            storage_log_modulus,
+        } = self;
+
+        let params = LwePackingKeyswitchKeyConformanceParams {
+            decomp_base_log: parameter_set.packing_ks_base_log,
+            decomp_level_count: parameter_set.packing_ks_level,
+            input_lwe_dimension: parameter_set
+                .uncompressed_glwe_dimension
+                .to_equivalent_lwe_dimension(parameter_set.uncompressed_polynomial_size),
+            output_glwe_size: parameter_set.packing_ks_glwe_dimension.to_glwe_size(),
+            output_polynomial_size: parameter_set.packing_ks_polynomial_size,
+            ciphertext_modulus: parameter_set.cipherext_modulus,
+        };
+
+        packing_key_switching_key.is_conformant(&params)
+            && *lwe_per_glwe == parameter_set.lwe_per_glwe
+            && *storage_log_modulus == parameter_set.storage_log_modulus
+    }
+}
+
+impl ParameterSetConformant for DecompressionKey {
+    type ParameterSet = CompressionKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        match self {
+            Self::Classic {
+                blind_rotate_key,
+                lwe_per_glwe,
+            } => {
+                let Ok(params) = parameter_set.try_into() else {
+                    return false;
+                };
+
+                blind_rotate_key.is_conformant(&params)
+                    && *lwe_per_glwe == parameter_set.lwe_per_glwe
+            }
+            Self::MultiBit {
+                multi_bit_blind_rotate_key,
+                lwe_per_glwe,
+                thread_count,
+            } => {
+                let Ok(params) = parameter_set.try_into() else {
+                    return false;
+                };
+
+                multi_bit_blind_rotate_key.is_conformant(&params)
+                    && *lwe_per_glwe == parameter_set.lwe_per_glwe
+                    && thread_count.0 > 0
+            }
+        }
+    }
+}
+
+impl TryFrom<&CompressionKeyConformanceParams> for LweBootstrapKeyConformanceParams<u64> {
+    type Error = String;
+
+    fn try_from(value: &CompressionKeyConformanceParams) -> Result<Self, String> {
+        let CompressionKeyConformanceParams {
+            br_level,
+            br_base_log,
+            packing_ks_polynomial_size,
+            packing_ks_glwe_dimension,
+            uncompressed_polynomial_size,
+            uncompressed_glwe_dimension,
+            decompression_grouping_factor,
+            ..
+        } = value;
+
+        if decompression_grouping_factor.is_some() {
+            return Err("Expected classic PBS decompression conformance parameters, found multi bit parameters".to_owned());
+        }
+
+        Ok(Self {
+            decomp_base_log: *br_base_log,
+            decomp_level_count: *br_level,
+            input_lwe_dimension: packing_ks_glwe_dimension
+                .to_equivalent_lwe_dimension(*packing_ks_polynomial_size),
+            output_glwe_size: uncompressed_glwe_dimension.to_glwe_size(),
+            polynomial_size: *uncompressed_polynomial_size,
+            ciphertext_modulus: value.cipherext_modulus,
+        })
+    }
+}
+
+impl TryFrom<&CompressionKeyConformanceParams> for MultiBitBootstrapKeyConformanceParams<u64> {
+    type Error = String;
+
+    fn try_from(value: &CompressionKeyConformanceParams) -> Result<Self, String> {
+        let CompressionKeyConformanceParams {
+            br_level,
+            br_base_log,
+            packing_ks_polynomial_size,
+            packing_ks_glwe_dimension,
+            uncompressed_polynomial_size,
+            uncompressed_glwe_dimension,
+            decompression_grouping_factor,
+            ..
+        } = value;
+
+        let Some(grouping_factor) = decompression_grouping_factor.as_ref() else {
+            return Err("Expected multi bit PBS decompression conformance parameters, found classic parameters".to_owned());
+        };
+
+        Ok(Self {
+            decomp_base_log: *br_base_log,
+            decomp_level_count: *br_level,
+            input_lwe_dimension: packing_ks_glwe_dimension
+                .to_equivalent_lwe_dimension(*packing_ks_polynomial_size),
+            output_glwe_size: uncompressed_glwe_dimension.to_glwe_size(),
+            polynomial_size: *uncompressed_polynomial_size,
+            ciphertext_modulus: value.cipherext_modulus,
+            grouping_factor: *grouping_factor,
+        })
+    }
+}
+
+/// A compression key used to compress a list of [`SquashedNoiseCiphertext`]
+///
+/// [`SquashedNoiseCiphertext`]: crate::shortint::ciphertext::SquashedNoiseCiphertext
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Versionize)]
+#[versionize(NoiseSquashingCompressionKeyVersions)]
+pub struct NoiseSquashingCompressionKey {
+    pub(super) packing_key_switching_key: LwePackingKeyswitchKey<Vec<u128>>,
+    pub(super) lwe_per_glwe: LweCiphertextCount,
+}
+
+impl NoiseSquashingCompressionKey {
+    pub fn new(
+        noise_squashing_private_key: &NoiseSquashingPrivateKey,
+        noise_squashing_compression_private_key: &NoiseSquashingCompressionPrivateKey,
+    ) -> Self {
+        noise_squashing_private_key
+            .new_noise_squashing_compression_key(noise_squashing_compression_private_key)
+    }
+
+    /// Construct from raw parts
+    ///
+    /// # Panics
+    ///
+    /// Panics if lwe_per_glwe is greater than the output polynomial size of the packing key
+    /// switching key
+    pub fn from_raw_parts(
+        packing_key_switching_key: LwePackingKeyswitchKey<Vec<u128>>,
+        lwe_per_glwe: LweCiphertextCount,
+    ) -> Self {
+        assert!(
+            lwe_per_glwe.0 <= packing_key_switching_key.output_polynomial_size().0,
+            "Cannot pack more than polynomial_size(={}) elements per glwe, {} requested",
+            packing_key_switching_key.output_polynomial_size().0,
+            lwe_per_glwe.0,
         );
+        Self {
+            packing_key_switching_key,
+            lwe_per_glwe,
+        }
+    }
+
+    pub fn into_raw_parts(self) -> (LwePackingKeyswitchKey<Vec<u128>>, LweCiphertextCount) {
+        let Self {
+            packing_key_switching_key,
+            lwe_per_glwe,
+        } = self;
+
+        (packing_key_switching_key, lwe_per_glwe)
+    }
+
+    pub fn packing_key_switching_key(&self) -> &LwePackingKeyswitchKey<Vec<u128>> {
+        &self.packing_key_switching_key
+    }
+
+    pub fn lwe_per_glwe(&self) -> LweCiphertextCount {
+        self.lwe_per_glwe
+    }
+}
+
+impl NoiseSquashingPrivateKey {
+    pub fn new_noise_squashing_compression_key(
+        &self,
+        private_compression_key: &NoiseSquashingCompressionPrivateKey,
+    ) -> NoiseSquashingCompressionKey {
+        let params = &private_compression_key.params;
 
         let packing_key_switching_key = ShortintEngine::with_thread_local_mut(|engine| {
             allocate_and_generate_new_lwe_packing_keyswitch_key(
-                &self.large_lwe_secret_key(),
+                &self.post_noise_squashing_secret_key().as_lwe_secret_key(),
                 &private_compression_key.post_packing_ks_key,
                 params.packing_ks_base_log,
                 params.packing_ks_level,
                 params.packing_ks_key_noise_distribution,
-                self.parameters.ciphertext_modulus(),
+                params.ciphertext_modulus,
                 &mut engine.encryption_generator,
             )
         });
 
-        assert!(
-            private_compression_key.params.storage_log_modulus.0
-                <= cks_params
-                    .polynomial_size
-                    .to_blind_rotation_input_modulus_log()
-                    .0,
-            "Compression parameters say to store more bits than useful"
-        );
-
-        let glwe_compression_key = CompressionKey {
+        NoiseSquashingCompressionKey {
             packing_key_switching_key,
             lwe_per_glwe: params.lwe_per_glwe,
-            storage_log_modulus: private_compression_key.params.storage_log_modulus,
-        };
+        }
+    }
 
-        let blind_rotate_key = ShortintEngine::with_thread_local_mut(|engine| {
-            ShortintBootstrappingKey::Classic(
-                engine.new_classic_bootstrapping_key(
-                    &private_compression_key
-                        .post_packing_ks_key
-                        .as_lwe_secret_key(),
-                    &self.glwe_secret_key,
-                    self.parameters.glwe_noise_distribution(),
-                    private_compression_key.params.br_base_log,
-                    private_compression_key.params.br_level,
-                    self.parameters.ciphertext_modulus(),
-                ),
-            )
-        });
+    pub fn new_compressed_noise_squashing_compression_key(
+        &self,
+        private_compression_key: &NoiseSquashingCompressionPrivateKey,
+    ) -> CompressedNoiseSquashingCompressionKey {
+        let params = &private_compression_key.params;
 
-        let glwe_decompression_key = DecompressionKey {
-            blind_rotate_key,
+        let packing_key_switching_key =
+            crate::shortint::engine::ShortintEngine::with_thread_local_mut(|engine| {
+                allocate_and_generate_new_seeded_lwe_packing_keyswitch_key(
+                    &self.post_noise_squashing_secret_key().as_lwe_secret_key(),
+                    &private_compression_key.post_packing_ks_key,
+                    params.packing_ks_base_log,
+                    params.packing_ks_level,
+                    params.packing_ks_key_noise_distribution,
+                    params.ciphertext_modulus,
+                    &mut engine.seeder,
+                )
+            });
+
+        CompressedNoiseSquashingCompressionKey {
+            packing_key_switching_key,
             lwe_per_glwe: params.lwe_per_glwe,
+        }
+    }
+}
+
+pub struct NoiseSquashingCompressionKeyConformanceParams {
+    pub packing_ks_level: DecompositionLevelCount,
+    pub packing_ks_base_log: DecompositionBaseLog,
+    pub packing_ks_polynomial_size: PolynomialSize,
+    pub packing_ks_glwe_dimension: GlweDimension,
+    pub lwe_per_glwe: LweCiphertextCount,
+    pub uncompressed_polynomial_size: PolynomialSize,
+    pub uncompressed_glwe_dimension: GlweDimension,
+    pub cipherext_modulus: CiphertextModulus<u128>,
+}
+
+impl
+    From<(
+        NoiseSquashingParameters,
+        NoiseSquashingCompressionParameters,
+    )> for NoiseSquashingCompressionKeyConformanceParams
+{
+    fn from(
+        (squashing_params, compression_params): (
+            NoiseSquashingParameters,
+            NoiseSquashingCompressionParameters,
+        ),
+    ) -> Self {
+        Self {
+            packing_ks_level: compression_params.packing_ks_level,
+            packing_ks_base_log: compression_params.packing_ks_base_log,
+            packing_ks_polynomial_size: compression_params.packing_ks_polynomial_size,
+            packing_ks_glwe_dimension: compression_params.packing_ks_glwe_dimension,
+            lwe_per_glwe: compression_params.lwe_per_glwe,
+            uncompressed_polynomial_size: squashing_params.polynomial_size(),
+            uncompressed_glwe_dimension: squashing_params.glwe_dimension(),
+            cipherext_modulus: compression_params.ciphertext_modulus,
+        }
+    }
+}
+
+impl ParameterSetConformant for NoiseSquashingCompressionKey {
+    type ParameterSet = NoiseSquashingCompressionKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self {
+            packing_key_switching_key,
+            lwe_per_glwe,
+        } = self;
+
+        let params = LwePackingKeyswitchKeyConformanceParams {
+            decomp_base_log: parameter_set.packing_ks_base_log,
+            decomp_level_count: parameter_set.packing_ks_level,
+            input_lwe_dimension: parameter_set
+                .uncompressed_glwe_dimension
+                .to_equivalent_lwe_dimension(parameter_set.uncompressed_polynomial_size),
+            output_glwe_size: parameter_set.packing_ks_glwe_dimension.to_glwe_size(),
+            output_polynomial_size: parameter_set.packing_ks_polynomial_size,
+            ciphertext_modulus: parameter_set.cipherext_modulus,
         };
 
-        (glwe_compression_key, glwe_decompression_key)
+        packing_key_switching_key.is_conformant(&params)
+            && *lwe_per_glwe == parameter_set.lwe_per_glwe
     }
 }

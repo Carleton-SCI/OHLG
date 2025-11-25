@@ -8,16 +8,17 @@ use crate::core_crypto::commons::parameters::{
 use crate::core_crypto::commons::traits::{
     Container, ContiguousEntityContainer, ContiguousEntityContainerMut, Split,
 };
-use crate::core_crypto::commons::utils::izip;
+use crate::core_crypto::commons::utils::izip_eq;
 use crate::core_crypto::entities::ggsw_ciphertext::{
-    fourier_ggsw_level_matrix_size, GgswCiphertext,
+    fourier_ggsw_ciphertext_size, fourier_ggsw_level_matrix_size, GgswCiphertext,
 };
 use crate::core_crypto::entities::glwe_ciphertext::{GlweCiphertext, GlweCiphertextView};
 use crate::core_crypto::fft_impl::fft64::math::decomposition::TensorSignedDecompositionLendingIter;
 use crate::core_crypto::prelude::ContainerMut;
-use aligned_vec::CACHELINE_ALIGN;
-use concrete_fft::fft128::f128;
-use dyn_stack::{PodStack, ReborrowMut, SizeOverflow, StackReq};
+
+use aligned_vec::{avec, ABox, CACHELINE_ALIGN};
+use dyn_stack::{PodStack, SizeOverflow, StackReq};
+use tfhe_fft::fft128::f128;
 use tfhe_versionable::Versionize;
 
 /// A GGSW ciphertext in the Fourier domain.
@@ -33,6 +34,39 @@ pub struct Fourier128GgswCiphertext<C: Container<Element = f64>> {
     glwe_size: GlweSize,
     decomposition_base_log: DecompositionBaseLog,
     decomposition_level_count: DecompositionLevelCount,
+}
+
+pub type Fourier128GgswCiphertextOwned = Fourier128GgswCiphertext<ABox<[f64]>>;
+
+impl Fourier128GgswCiphertext<ABox<[f64]>> {
+    pub fn new(
+        glwe_size: GlweSize,
+        polynomial_size: PolynomialSize,
+        decomposition_base_log: DecompositionBaseLog,
+        decomposition_level_count: DecompositionLevelCount,
+    ) -> Self {
+        let container_len = fourier_ggsw_ciphertext_size(
+            glwe_size,
+            polynomial_size.to_fourier_polynomial_size(),
+            decomposition_level_count,
+        );
+
+        let boxed_re0 = avec![0.0f64; container_len].into_boxed_slice();
+        let boxed_re1 = avec![0.0f64; container_len].into_boxed_slice();
+        let boxed_im0 = avec![0.0f64; container_len].into_boxed_slice();
+        let boxed_im1 = avec![0.0f64; container_len].into_boxed_slice();
+
+        Fourier128GgswCiphertext::from_container(
+            boxed_re0,
+            boxed_re1,
+            boxed_im0,
+            boxed_im1,
+            polynomial_size,
+            glwe_size,
+            decomposition_base_log,
+            decomposition_level_count,
+        )
+    }
 }
 
 /// A matrix containing a single level of gadget decomposition, in the Fourier domain.
@@ -73,11 +107,15 @@ impl<C: Container<Element = f64>> Fourier128GgswCiphertext<C> {
         decomposition_level_count: DecompositionLevelCount,
     ) -> Self {
         assert_eq!(polynomial_size.0 % 2, 0);
-        let container_len = polynomial_size.to_fourier_polynomial_size().0
-            * glwe_size.0
-            * glwe_size.0
-            * decomposition_level_count.0;
+        let container_len = fourier_ggsw_ciphertext_size(
+            glwe_size,
+            polynomial_size.to_fourier_polynomial_size(),
+            decomposition_level_count,
+        );
         assert_eq!(data_re0.container_len(), container_len);
+        assert_eq!(data_re1.container_len(), container_len);
+        assert_eq!(data_im0.container_len(), container_len);
+        assert_eq!(data_im1.container_len(), container_len);
 
         Self {
             data_re0,
@@ -148,11 +186,12 @@ impl<C: Container<Element = f64>> Fourier128GgswCiphertext<C> {
     where
         C: Split,
     {
-        izip!(
-            self.data_re0.split_into(self.decomposition_level_count.0),
-            self.data_re1.split_into(self.decomposition_level_count.0),
-            self.data_im0.split_into(self.decomposition_level_count.0),
-            self.data_im1.split_into(self.decomposition_level_count.0)
+        let decomposition_level_count = self.decomposition_level_count.0;
+        izip_eq!(
+            self.data_re0.split_into(decomposition_level_count),
+            self.data_re1.split_into(decomposition_level_count),
+            self.data_im0.split_into(decomposition_level_count),
+            self.data_im1.split_into(decomposition_level_count)
         )
         .enumerate()
         .map(move |(i, (data_re0, data_re1, data_im0, data_im1))| {
@@ -163,7 +202,7 @@ impl<C: Container<Element = f64>> Fourier128GgswCiphertext<C> {
                 data_im1,
                 self.polynomial_size,
                 self.glwe_size,
-                DecompositionLevel(i + 1),
+                DecompositionLevel(decomposition_level_count - i),
             )
         })
     }
@@ -199,12 +238,15 @@ impl<C: Container<Element = f64>> Fourier128GgswLevelMatrix<C> {
     }
 
     /// Return an iterator over the rows of the level matrices.
-    pub fn into_rows(self) -> impl DoubleEndedIterator<Item = Fourier128GgswLevelRow<C>>
+    pub fn into_rows(
+        self,
+    ) -> impl DoubleEndedIterator<Item = Fourier128GgswLevelRow<C>>
+           + ExactSizeIterator<Item = Fourier128GgswLevelRow<C>>
     where
         C: Split,
     {
         let row_count = self.row_count();
-        izip!(
+        izip_eq!(
             self.data_re0.split_into(row_count),
             self.data_re1.split_into(row_count),
             self.data_im0.split_into(row_count),
@@ -313,7 +355,7 @@ where
 
             let (data_re0, data_re1, data_im0, data_im1) = this.data();
 
-            for (fourier_re0, fourier_re1, fourier_im0, fourier_im1, coef_poly) in izip!(
+            for (fourier_re0, fourier_re1, fourier_im0, fourier_im1, coef_poly) in izip_eq!(
                 data_re0.into_chunks(poly_size),
                 data_re1.into_chunks(poly_size),
                 data_im0.into_chunks(poly_size),
@@ -364,7 +406,7 @@ pub fn add_external_product_assign<Scalar, ContOut, ContGgsw, ContGlwe>(
     ggsw: &Fourier128GgswCiphertext<ContGgsw>,
     glwe: &GlweCiphertext<ContGlwe>,
     fft: Fft128View<'_>,
-    stack: PodStack<'_>,
+    stack: &mut PodStack,
 ) where
     Scalar: UnsignedTorus,
     ContOut: ContainerMut<Element = Scalar>,
@@ -376,7 +418,7 @@ pub fn add_external_product_assign<Scalar, ContOut, ContGgsw, ContGlwe>(
         ggsw: Fourier128GgswCiphertext<&[f64]>,
         glwe: GlweCiphertext<&[Scalar]>,
         fft: Fft128View<'_>,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
         // we check that the polynomial sizes match
         debug_assert_eq!(ggsw.polynomial_size(), glwe.polynomial_size());
@@ -397,13 +439,13 @@ pub fn add_external_product_assign<Scalar, ContOut, ContGgsw, ContGlwe>(
             ggsw.decomposition_level_count(),
         );
 
-        let (mut output_fft_buffer_re0, stack) =
+        let (output_fft_buffer_re0, stack) =
             stack.make_aligned_raw::<f64>(fourier_poly_size * ggsw.glwe_size().0, align);
-        let (mut output_fft_buffer_re1, stack) =
+        let (output_fft_buffer_re1, stack) =
             stack.make_aligned_raw::<f64>(fourier_poly_size * ggsw.glwe_size().0, align);
-        let (mut output_fft_buffer_im0, stack) =
+        let (output_fft_buffer_im0, stack) =
             stack.make_aligned_raw::<f64>(fourier_poly_size * ggsw.glwe_size().0, align);
-        let (mut output_fft_buffer_im1, mut substack0) =
+        let (output_fft_buffer_im1, substack0) =
             stack.make_aligned_raw::<f64>(fourier_poly_size * ggsw.glwe_size().0, align);
 
         // output_fft_buffer is initially uninitialized, considered to be implicitly zero, to avoid
@@ -415,21 +457,21 @@ pub fn add_external_product_assign<Scalar, ContOut, ContGgsw, ContGlwe>(
             // ------------------------------------------------------ EXTERNAL PRODUCT IN FOURIER
             // DOMAIN In this section, we perform the external product in the fourier
             // domain, and accumulate the result in the output_fft_buffer variable.
-            let (mut decomposition, mut substack1) = TensorSignedDecompositionLendingIter::new(
+            let (mut decomposition, substack1) = TensorSignedDecompositionLendingIter::new(
                 glwe.as_ref()
                     .iter()
-                    .map(|s| decomposer.closest_representable(*s)),
+                    .map(|s| decomposer.init_decomposer_state(*s)),
                 DecompositionBaseLog(decomposer.base_log),
                 DecompositionLevelCount(decomposer.level_count),
-                substack0.rb_mut(),
+                substack0,
             );
 
             // We loop through the levels (we reverse to match the order of the decomposition
             // iterator.)
-            for ggsw_decomp_matrix in ggsw.into_levels().rev() {
+            for ggsw_decomp_matrix in ggsw.into_levels() {
                 // We retrieve the decomposition of this level.
-                let (glwe_level, glwe_decomp_term, mut substack2) =
-                    collect_next_term(&mut decomposition, &mut substack1, align);
+                let (glwe_level, glwe_decomp_term, substack2) =
+                    collect_next_term(&mut decomposition, substack1, align);
                 let glwe_decomp_term = GlweCiphertextView::from_container(
                     &*glwe_decomp_term,
                     ggsw.polynomial_size(),
@@ -449,36 +491,36 @@ pub fn add_external_product_assign<Scalar, ContOut, ContGgsw, ContGlwe>(
                 //
                 //        t = 1                           t = 2                     ...
 
-                for (ggsw_row, glwe_poly) in izip!(
+                for (ggsw_row, glwe_poly) in izip_eq!(
                     ggsw_decomp_matrix.into_rows(),
                     glwe_decomp_term.as_polynomial_list().iter()
                 ) {
                     let len = fourier_poly_size;
-                    let stack = substack2.rb_mut();
-                    let (mut fourier_re0, stack) = stack.make_aligned_raw::<f64>(len, align);
-                    let (mut fourier_re1, stack) = stack.make_aligned_raw::<f64>(len, align);
-                    let (mut fourier_im0, stack) = stack.make_aligned_raw::<f64>(len, align);
-                    let (mut fourier_im1, _) = stack.make_aligned_raw::<f64>(len, align);
+                    let stack = &mut *substack2;
+                    let (fourier_re0, stack) = stack.make_aligned_raw::<f64>(len, align);
+                    let (fourier_re1, stack) = stack.make_aligned_raw::<f64>(len, align);
+                    let (fourier_im0, stack) = stack.make_aligned_raw::<f64>(len, align);
+                    let (fourier_im1, _) = stack.make_aligned_raw::<f64>(len, align);
                     // We perform the forward fft transform for the glwe polynomial
                     fft.forward_as_integer(
-                        &mut fourier_re0,
-                        &mut fourier_re1,
-                        &mut fourier_im0,
-                        &mut fourier_im1,
+                        fourier_re0,
+                        fourier_re1,
+                        fourier_im0,
+                        fourier_im1,
                         glwe_poly.as_ref(),
                     );
                     // Now we loop through the polynomials of the output, and add the
                     // corresponding product of polynomials.
                     update_with_fmadd(
-                        &mut output_fft_buffer_re0,
-                        &mut output_fft_buffer_re1,
-                        &mut output_fft_buffer_im0,
-                        &mut output_fft_buffer_im1,
+                        output_fft_buffer_re0,
+                        output_fft_buffer_re1,
+                        output_fft_buffer_im0,
+                        output_fft_buffer_im1,
                         ggsw_row,
-                        &fourier_re0,
-                        &fourier_re1,
-                        &fourier_im0,
-                        &fourier_im1,
+                        fourier_re0,
+                        fourier_re1,
+                        fourier_im0,
+                        fourier_im1,
                         is_output_uninit,
                         fourier_poly_size,
                     );
@@ -495,12 +537,7 @@ pub fn add_external_product_assign<Scalar, ContOut, ContGgsw, ContGlwe>(
         //
         // We iterate over the polynomials in the output.
         if !is_output_uninit {
-            let output_fft_buffer_re0 = output_fft_buffer_re0;
-            let output_fft_buffer_re1 = output_fft_buffer_re1;
-            let output_fft_buffer_im0 = output_fft_buffer_im0;
-            let output_fft_buffer_im1 = output_fft_buffer_im1;
-
-            for (mut out, fourier_re0, fourier_re1, fourier_im0, fourier_im1) in izip!(
+            for (mut out, fourier_re0, fourier_re1, fourier_im0, fourier_im1) in izip_eq!(
                 out.as_mut_polynomial_list().iter_mut(),
                 output_fft_buffer_re0.into_chunks(fourier_poly_size),
                 output_fft_buffer_re1.into_chunks(fourier_poly_size),
@@ -513,7 +550,7 @@ pub fn add_external_product_assign<Scalar, ContOut, ContGgsw, ContGlwe>(
                     fourier_re1,
                     fourier_im0,
                     fourier_im1,
-                    substack0.rb_mut(),
+                    substack0,
                 );
             }
         }
@@ -532,13 +569,9 @@ fn collect_next_term<'a, Scalar: UnsignedTorus>(
     decomposition: &mut TensorSignedDecompositionLendingIter<'_, Scalar>,
     substack1: &'a mut PodStack,
     align: usize,
-) -> (
-    DecompositionLevel,
-    dyn_stack::DynArray<'a, Scalar>,
-    PodStack<'a>,
-) {
+) -> (DecompositionLevel, &'a mut [Scalar], &'a mut PodStack) {
     let (glwe_level, _, glwe_decomp_term) = decomposition.next_term().unwrap();
-    let (glwe_decomp_term, substack2) = substack1.rb_mut().collect_aligned(align, glwe_decomp_term);
+    let (glwe_decomp_term, substack2) = substack1.collect_aligned(align, glwe_decomp_term);
     (glwe_level, glwe_decomp_term, substack2)
 }
 
@@ -577,7 +610,7 @@ fn update_with_fmadd_scalar(
             rhs_re1,
             rhs_im0,
             rhs_im1,
-        ) in izip!(
+        ) in izip_eq!(
             output_fourier_re0,
             output_fourier_re1,
             output_fourier_im0,
@@ -620,7 +653,7 @@ fn update_with_fmadd_scalar(
             rhs_re1,
             rhs_im0,
             rhs_im1,
-        ) in izip!(
+        ) in izip_eq!(
             output_fourier_re0,
             output_fourier_re1,
             output_fourier_im0,
@@ -676,7 +709,7 @@ pub fn update_with_fmadd(
         ggsw_poly_re1,
         ggsw_poly_im0,
         ggsw_poly_im1,
-    ) in izip!(
+    ) in izip_eq!(
         output_fft_buffer_re0.into_chunks(fourier_poly_size),
         output_fft_buffer_re1.into_chunks(fourier_poly_size),
         output_fft_buffer_im0.into_chunks(fourier_poly_size),
@@ -770,12 +803,15 @@ pub fn cmux_scratch<Scalar>(
 }
 
 /// This cmux mutates both ct1 and ct0. The result is in ct0 after the method was called.
+///
+/// # Panics
+/// This will panic if ct0 and ct1 are not of the same size
 pub fn cmux<Scalar, ContCt0, ContCt1, ContGgsw>(
     ct0: &mut GlweCiphertext<ContCt0>,
     ct1: &mut GlweCiphertext<ContCt1>,
     ggsw: &Fourier128GgswCiphertext<ContGgsw>,
     fft: Fft128View<'_>,
-    stack: PodStack<'_>,
+    stack: &mut PodStack,
 ) where
     Scalar: UnsignedTorus,
     ContCt0: ContainerMut<Element = Scalar>,
@@ -787,9 +823,9 @@ pub fn cmux<Scalar, ContCt0, ContCt1, ContGgsw>(
         mut ct1: GlweCiphertext<&mut [Scalar]>,
         ggsw: Fourier128GgswCiphertext<&[f64]>,
         fft: Fft128View<'_>,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
-        for (c1, c0) in izip!(ct1.as_mut(), ct0.as_ref()) {
+        for (c1, c0) in izip_eq!(ct1.as_mut(), ct0.as_ref()) {
             *c1 = c1.wrapping_sub(*c0);
         }
         add_external_product_assign(&mut ct0, &ggsw, &ct1, fft, stack);

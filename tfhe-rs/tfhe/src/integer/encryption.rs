@@ -7,7 +7,7 @@ pub(crate) trait KnowsMessageModulus {
 
 impl KnowsMessageModulus for crate::shortint::ClientKey {
     fn message_modulus(&self) -> MessageModulus {
-        self.parameters.message_modulus()
+        self.parameters().message_modulus()
     }
 }
 
@@ -92,9 +92,7 @@ where
 // We need to concretize the iterator type to be able to pass callbacks consuming the iterator,
 // having an opaque return impl Iterator does not allow to take callbacks at this moment, not sure
 // the Fn(impl Trait) syntax can be made to work nicely with the rest of the language
-pub(crate) type ClearRadixBlockIterator<T> = std::iter::Take<
-    std::iter::Chain<std::iter::Map<BlockDecomposer<T>, fn(T) -> u64>, std::iter::Repeat<u64>>,
->;
+pub(crate) type ClearRadixBlockIterator<T> = std::iter::Map<BlockDecomposer<T>, fn(T) -> u64>;
 
 pub(crate) fn create_clear_radix_block_iterator<T>(
     message: T,
@@ -105,12 +103,7 @@ where
     T: DecomposableInto<u64>,
 {
     let bits_in_block = message_modulus.0.ilog2();
-    let decomposer = BlockDecomposer::new(message, bits_in_block);
-
-    decomposer
-        .iter_as::<u64>()
-        .chain(std::iter::repeat(0u64))
-        .take(num_blocks)
+    BlockDecomposer::with_block_count(message, bits_in_block, num_blocks).iter_as::<u64>()
 }
 
 pub(crate) fn encrypt_crt<BlockKey, Block, CrtCiphertextType, F>(
@@ -127,7 +120,7 @@ where
 
     // Put each decomposition into a new ciphertext
     for modulus in base_vec.iter().copied() {
-        let ct = encrypt_block(encrypting_key, message, MessageModulus(modulus as usize));
+        let ct = encrypt_block(encrypting_key, message, MessageModulus(modulus));
 
         ctxt_vect.push(ct);
     }
@@ -151,10 +144,7 @@ where
     let ctxt_vect = encrypt_blocks(
         encrypting_key,
         message,
-        base_vec
-            .clone()
-            .into_iter()
-            .map(|x| MessageModulus(x as usize)),
+        base_vec.clone().into_iter().map(MessageModulus),
     );
 
     CrtCiphertextType::from((ctxt_vect, base_vec))

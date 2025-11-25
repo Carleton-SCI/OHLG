@@ -1,4 +1,4 @@
-use crate::core_crypto::prelude::{CastFrom, Numeric, UnsignedNumeric};
+use crate::core_crypto::prelude::{CastFrom, Numeric, OverflowingAdd, UnsignedNumeric};
 use std::ops::ShlAssign;
 
 const fn one_for_unsigned_u64_based_integer<const N: usize>() -> [u64; N] {
@@ -80,6 +80,16 @@ impl<const N: usize> StaticUnsignedBigInt<N> {
     pub fn ceil_ilog2(self) -> u32 {
         self.ilog2() + u32::from(!self.is_power_of_two())
     }
+
+    pub fn wrapping_sub(mut self, other: Self) -> Self {
+        let mut negated = !other;
+        super::algorithms::wrapping_add_assign_words(
+            negated.0.as_mut_slice(),
+            Self::from(1u64).0.as_slice(),
+        );
+        super::algorithms::wrapping_add_assign_words(self.0.as_mut_slice(), negated.0.as_slice());
+        self
+    }
 }
 
 #[cfg(test)]
@@ -107,7 +117,7 @@ impl<const N: usize> std::cmp::PartialOrd for StaticUnsignedBigInt<N> {
 
 impl<const N: usize> std::ops::AddAssign<Self> for StaticUnsignedBigInt<N> {
     fn add_assign(&mut self, rhs: Self) {
-        super::algorithms::add_assign_words(self.0.as_mut_slice(), rhs.0.as_slice());
+        super::algorithms::wrapping_add_assign_words(self.0.as_mut_slice(), rhs.0.as_slice());
     }
 }
 
@@ -248,6 +258,18 @@ impl<const N: usize> std::ops::Shr<usize> for StaticUnsignedBigInt<N> {
 impl<const N: usize> std::ops::ShlAssign<usize> for StaticUnsignedBigInt<N> {
     fn shl_assign(&mut self, shift: usize) {
         super::algorithms::shl_assign(self.0.as_mut_slice(), shift as u32);
+    }
+}
+
+impl<const N: usize> OverflowingAdd<Self> for StaticUnsignedBigInt<N> {
+    type Output = Self;
+
+    fn overflowing_add(self, other: Self) -> (Self::Output, bool) {
+        let mut result = self;
+        let overflowed =
+            super::algorithms::unsigned_overflowing_add_assign_words(&mut result.0, &other.0);
+
+        (result, overflowed)
     }
 }
 
@@ -461,4 +483,16 @@ impl<const N: usize> Numeric for StaticUnsignedBigInt<N> {
 
 impl<const N: usize> UnsignedNumeric for StaticUnsignedBigInt<N> {
     type NumericSignedType = super::static_signed::StaticSignedBigInt<N>;
+}
+
+impl<const N: usize> TryFrom<StaticUnsignedBigInt<N>> for u128 {
+    type Error = &'static str;
+
+    fn try_from(value: StaticUnsignedBigInt<N>) -> Result<Self, Self::Error> {
+        if N > 2 && value.0[2..].iter().any(|e| *e != 0) {
+            Err("Value is too big to be converted to u128")
+        } else {
+            Ok(Self::cast_from(value))
+        }
+    }
 }

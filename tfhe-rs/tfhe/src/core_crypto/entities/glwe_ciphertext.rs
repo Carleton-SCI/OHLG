@@ -219,6 +219,12 @@ pub fn glwe_ciphertext_size(glwe_size: GlweSize, polynomial_size: PolynomialSize
     glwe_size.0 * polynomial_size.0
 }
 
+/// Return the number of elements in the **mask** of a [`GlweCiphertext`]
+///  given a [`GlweDimension`] and [`PolynomialSize`].
+pub fn glwe_mask_size(glwe_dim: GlweDimension, polynomial_size: PolynomialSize) -> usize {
+    glwe_dim.0 * polynomial_size.0
+}
+
 /// Return the number of elements in a [`GlweMask`] given a [`GlweDimension`] and
 /// [`PolynomialSize`].
 pub fn glwe_ciphertext_mask_size(
@@ -248,9 +254,6 @@ pub fn glwe_ciphertext_encryption_noise_sample_count(
 }
 
 /// A [`GLWE ciphertext`](`GlweCiphertext`).
-///
-/// **Remark:** GLWE ciphertexts generalize LWE ciphertexts by definition, however in this library,
-/// GLWE ciphertext entities do not generalize LWE ciphertexts, i.e., polynomial size cannot be 1.
 ///
 /// # Formal Definition
 ///
@@ -627,7 +630,7 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> CreateFrom<C> for 
 /// Can be used on a server to check if client inputs are well formed
 /// before running a computation on them
 #[derive(Copy, Clone)]
-pub struct GlweCiphertextConformanceParameters<T: UnsignedInteger> {
+pub struct GlweCiphertextConformanceParams<T: UnsignedInteger> {
     pub glwe_dim: GlweDimension,
     pub polynomial_size: PolynomialSize,
     pub ct_modulus: CiphertextModulus<T>,
@@ -637,15 +640,26 @@ impl<C: Container> ParameterSetConformant for GlweCiphertext<C>
 where
     C::Element: UnsignedInteger,
 {
-    type ParameterSet = GlweCiphertextConformanceParameters<C::Element>;
+    type ParameterSet = GlweCiphertextConformanceParams<C::Element>;
 
     fn is_conformant(
         &self,
-        glwe_ct_parameters: &GlweCiphertextConformanceParameters<C::Element>,
+        glwe_ct_parameters: &GlweCiphertextConformanceParams<C::Element>,
     ) -> bool {
-        check_encrypted_content_respects_mod(self, glwe_ct_parameters.ct_modulus)
-            && self.glwe_size() == glwe_ct_parameters.glwe_dim.to_glwe_size()
-            && self.polynomial_size() == glwe_ct_parameters.polynomial_size
-            && self.ciphertext_modulus() == glwe_ct_parameters.ct_modulus
+        let Self {
+            data,
+            polynomial_size,
+            ciphertext_modulus,
+        } = self;
+
+        polynomial_size.0.is_power_of_two()
+            && check_encrypted_content_respects_mod(self, glwe_ct_parameters.ct_modulus)
+            && data.container_len()
+                == glwe_ciphertext_size(
+                    glwe_ct_parameters.glwe_dim.to_glwe_size(),
+                    glwe_ct_parameters.polynomial_size,
+                )
+            && *polynomial_size == glwe_ct_parameters.polynomial_size
+            && *ciphertext_modulus == glwe_ct_parameters.ct_modulus
     }
 }

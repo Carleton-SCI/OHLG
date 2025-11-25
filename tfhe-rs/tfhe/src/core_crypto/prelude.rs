@@ -5,11 +5,12 @@
 
 pub use super::algorithms::misc::divide_round;
 pub use super::algorithms::*;
+pub use super::commons::ciphertext_modulus::CiphertextModulusKind;
 pub use super::commons::computation_buffers::ComputationBuffers;
 pub use super::commons::dispersion::*;
 pub use super::commons::generators::{EncryptionRandomGenerator, SecretRandomGenerator};
 pub use super::commons::math::decomposition::SignedDecomposer;
-pub use super::commons::math::random::{ActivatedRandomGenerator, Gaussian, TUniform};
+pub use super::commons::math::random::{DefaultRandomGenerator, Gaussian, TUniform};
 pub use super::commons::parameters::*;
 pub use super::commons::traits::*;
 pub use super::entities::*;

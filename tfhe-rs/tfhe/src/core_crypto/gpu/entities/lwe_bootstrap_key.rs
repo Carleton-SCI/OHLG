@@ -4,6 +4,10 @@ use crate::core_crypto::prelude::{
     lwe_bootstrap_key_size, Container, DecompositionBaseLog, DecompositionLevelCount,
     GlweDimension, LweBootstrapKey, LweDimension, PolynomialSize, UnsignedInteger,
 };
+#[derive(Clone, Debug)]
+pub enum CudaModulusSwitchNoiseReductionConfiguration {
+    Centered,
+}
 
 /// A structure representing a vector of GLWE ciphertexts with 64 bits of precision on the GPU.
 #[derive(Debug)]
@@ -21,12 +25,16 @@ pub struct CudaLweBootstrapKey {
     pub(crate) decomp_base_log: DecompositionBaseLog,
     // Decomposition level count
     pub(crate) decomp_level_count: DecompositionLevelCount,
+    // Pointer to the noise reduction key
+    pub(crate) ms_noise_reduction_configuration:
+        Option<CudaModulusSwitchNoiseReductionConfiguration>,
 }
 
 #[allow(dead_code)]
 impl CudaLweBootstrapKey {
     pub fn from_lwe_bootstrap_key<InputBskCont: Container>(
         bsk: &LweBootstrapKey<InputBskCont>,
+        ms_noise_reduction_configuration: Option<CudaModulusSwitchNoiseReductionConfiguration>,
         streams: &CudaStreams,
     ) -> Self
     where
@@ -37,6 +45,11 @@ impl CudaLweBootstrapKey {
         let decomp_level_count = bsk.decomposition_level_count();
         let decomp_base_log = bsk.decomposition_base_log();
         let glwe_dimension = bsk.glwe_size().to_glwe_dimension();
+        let double_count = if size_of::<InputBskCont::Element>() == 16 {
+            2
+        } else {
+            1
+        };
 
         // Allocate memory
         let mut d_vec = CudaVec::<f64>::new_multi_gpu(
@@ -45,10 +58,11 @@ impl CudaLweBootstrapKey {
                 glwe_dimension.to_glwe_size(),
                 polynomial_size,
                 decomp_level_count,
-            ),
+            ) * double_count,
             streams,
         );
         // Copy to the GPU
+
         unsafe {
             convert_lwe_programmable_bootstrap_key_async(
                 streams,
@@ -60,6 +74,7 @@ impl CudaLweBootstrapKey {
                 polynomial_size,
             );
         }
+
         streams.synchronize();
         Self {
             d_vec,
@@ -68,6 +83,7 @@ impl CudaLweBootstrapKey {
             polynomial_size,
             decomp_base_log,
             decomp_level_count,
+            ms_noise_reduction_configuration,
         }
     }
 

@@ -4,20 +4,21 @@ use crate::integer::server_key::radix_parallel::tests_unsigned::{CpuFunctionExec
 use crate::integer::{
     BooleanBlock, IntegerKeyKind, RadixClientKey, ServerKey, SignedRadixCiphertext,
 };
+use crate::shortint::parameters::test_params::*;
 use crate::shortint::parameters::*;
 use std::sync::Arc;
 
 use crate::integer::server_key::radix_parallel::tests_unsigned::test_vector_comparisons::{
     default_all_eq_slices_test_case_impl, unchecked_all_eq_slices_test_case_impl,
 };
-use crate::integer::tests::create_parametrized_test;
+use crate::integer::tests::create_parameterized_test;
 
-create_parametrized_test!(integer_signed_unchecked_all_eq_slices_test_case);
-create_parametrized_test!(integer_signed_default_all_eq_slices_test_case);
+create_parameterized_test!(integer_signed_unchecked_all_eq_slices_test_case);
+create_parameterized_test!(integer_signed_default_all_eq_slices_test_case);
 
 fn integer_signed_unchecked_all_eq_slices_test_case<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_all_eq_slices_parallelized);
     unchecked_all_eq_slices_test_case(param, executor);
@@ -25,7 +26,7 @@ where
 
 pub(crate) fn unchecked_all_eq_slices_test_case<P, E>(params: P, mut executor: E)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     E: for<'a> FunctionExecutor<
         (&'a [SignedRadixCiphertext], &'a [SignedRadixCiphertext]),
         BooleanBlock,
@@ -49,7 +50,7 @@ where
 
 fn integer_signed_default_all_eq_slices_test_case<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::all_eq_slices_parallelized);
     default_all_eq_slices_test_case(param, executor);
@@ -57,7 +58,7 @@ where
 
 pub(crate) fn default_all_eq_slices_test_case<P, E>(params: P, mut executor: E)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     E: for<'a> FunctionExecutor<
         (&'a [SignedRadixCiphertext], &'a [SignedRadixCiphertext]),
         BooleanBlock,

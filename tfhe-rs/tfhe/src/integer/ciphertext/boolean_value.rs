@@ -1,6 +1,8 @@
 use super::{IntegerCiphertext, IntegerRadixCiphertext};
 use crate::integer::backward_compatibility::ciphertext::BooleanBlockVersions;
-use crate::integer::{RadixCiphertext, ServerKey};
+use crate::integer::ciphertext::{re_randomize_ciphertext_blocks, ReRandomizationSeed};
+use crate::integer::key_switching_key::KeySwitchingKeyMaterialView;
+use crate::integer::{CompactPublicKey, RadixCiphertext, ServerKey};
 use crate::shortint::ciphertext::NotTrivialCiphertextError;
 use crate::shortint::Ciphertext;
 use serde::{Deserialize, Serialize};
@@ -23,12 +25,12 @@ use tfhe_versionable::Versionize;
 /// ## Converting a [BooleanBlock] to a [RadixCiphertext]
 ///
 /// ```rust
-/// use tfhe::integer::{gen_keys_radix, BooleanBlock};
-/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+/// use tfhe::integer::gen_keys_radix;
+/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
 ///
 /// // We have 4 * 2 = 8 bits of message
 /// let size = 4;
-/// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+/// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
 ///
 /// let a = 128u8;
 /// let b = 55u8;
@@ -83,11 +85,11 @@ impl BooleanBlock {
     ///
     /// ```rust
     /// use tfhe::integer::{gen_keys_radix, BooleanBlock};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let a = 128u8;
     /// let ct_a = cks.encrypt(a);
@@ -141,11 +143,11 @@ impl BooleanBlock {
     /// # Example
     ///
     /// ```rust
-    /// use tfhe::integer::{gen_keys_radix, RadixCiphertext, SignedRadixCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::integer::gen_keys_radix;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // 8 bits
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 4);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, 4);
     ///
     /// let msg = false;
     /// let msg2 = true;
@@ -167,6 +169,22 @@ impl BooleanBlock {
 
     pub fn is_trivial(&self) -> bool {
         self.0.is_trivial()
+    }
+
+    pub fn re_randomize(
+        &mut self,
+        compact_public_key: &CompactPublicKey,
+        key_switching_key_material: &KeySwitchingKeyMaterialView,
+        seed: ReRandomizationSeed,
+    ) -> crate::Result<()> {
+        re_randomize_ciphertext_blocks(
+            core::slice::from_mut(&mut self.0),
+            compact_public_key,
+            key_switching_key_material,
+            seed,
+        )?;
+
+        Ok(())
     }
 }
 

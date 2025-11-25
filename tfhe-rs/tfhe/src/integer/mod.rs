@@ -15,7 +15,7 @@
 //!
 //! ```rust
 //! use tfhe::integer::gen_keys_radix;
-//! use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+//! use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
 //!
 //! //4 blocks for the radix decomposition
 //! let number_of_blocks = 4;
@@ -23,8 +23,10 @@
 //! let modulus = 1u64 << 8;
 //!
 //! // Generation of the client/server keys, using the default parameters:
-//! let (mut client_key, mut server_key) =
-//!     gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, number_of_blocks);
+//! let (client_key, server_key) = gen_keys_radix(
+//!     PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128,
+//!     number_of_blocks,
+//! );
 //!
 //! let msg1 = 153u64;
 //! let msg2 = 125u64;
@@ -55,22 +57,29 @@ pub mod backward_compatibility;
 pub mod bigint;
 pub mod ciphertext;
 pub mod client_key;
+pub mod compression_keys;
 pub mod key_switching_key;
 #[cfg(any(test, feature = "internal-keycache"))]
 pub mod keycache;
+pub mod noise_squashing;
 pub mod oprf;
 pub mod parameters;
 pub mod prelude;
 pub mod public_key;
 pub mod server_key;
+#[cfg(feature = "experimental")]
 pub mod wopbs;
 
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
+#[cfg(feature = "hpu")]
+pub mod hpu;
+
 #[cfg(feature = "zk-pok")]
 pub use ciphertext::ProvenCompactCiphertextList;
 
+use crate::shortint::parameters::ModulusSwitchType;
 pub use bigint::i256::I256;
 pub use bigint::i512::I512;
 pub use bigint::u256::U256;
@@ -136,6 +145,7 @@ where
             log2_p_fail: 1.0,
             ciphertext_modulus: wopbs_params.ciphertext_modulus,
             encryption_key_choice: wopbs_params.encryption_key_choice,
+            modulus_switch_noise_reduction_params: ModulusSwitchType::Standard,
         };
 
         crate::shortint::parameters::ShortintParameterSet::try_new_pbs_and_wopbs_param_set((
@@ -165,7 +175,7 @@ where
             gen_keys_inner(shortint_parameters_set)
         } else {
             keycache::KEY_CACHE
-                .get_from_params(shortint_parameters_set.pbs_parameters().unwrap(), key_kind)
+                .get_from_params(shortint_parameters_set.ap_parameters().unwrap(), key_kind)
         }
     }
     #[cfg(all(not(test), not(feature = "internal-keycache")))]
@@ -176,13 +186,16 @@ where
 
 /// Generate a couple of client and server keys with given parameters.
 ///
+/// Note: the resulting [`ServerKey`] can be fairly large, if needed you can generate a
+/// [`CompressedServerKey`] instead to reduce storage and network bandwidth usage.
+///
 /// ```rust
 /// use tfhe::integer::gen_keys_radix;
-/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
 ///
 /// // generate the client key and the server key:
 /// let num_blocks = 4;
-/// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+/// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
 /// ```
 pub fn gen_keys_radix<P>(parameters_set: P, num_blocks: usize) -> (RadixClientKey, ServerKey)
 where
@@ -196,13 +209,16 @@ where
 
 /// Generate a couple of client and server keys with given parameters.
 ///
+/// Note: the resulting [`ServerKey`] can be fairly large, if needed you can generate a
+/// [`CompressedServerKey`] instead to reduce storage and network bandwidth usage.
+///
 /// ```rust
 /// use tfhe::integer::gen_keys_crt;
-/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
 ///
 /// // generate the client key and the server key:
 /// let basis = vec![2, 3, 5];
-/// let (cks, sks) = gen_keys_crt(PARAM_MESSAGE_2_CARRY_2_KS_PBS, basis);
+/// let (cks, sks) = gen_keys_crt(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, basis);
 /// ```
 pub fn gen_keys_crt<P>(parameters_set: P, basis: Vec<u64>) -> (CrtClientKey, ServerKey)
 where

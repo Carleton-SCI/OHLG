@@ -2,7 +2,7 @@ use crate::core_crypto::commons::math::decomposition::decompose_one_level;
 pub use crate::core_crypto::commons::math::decomposition::DecompositionLevel;
 use crate::core_crypto::commons::numeric::UnsignedInteger;
 use crate::core_crypto::commons::parameters::{DecompositionBaseLog, DecompositionLevelCount};
-use dyn_stack::{DynArray, PodStack};
+use dyn_stack::PodStack;
 use std::iter::Map;
 use std::slice::IterMut;
 
@@ -18,7 +18,7 @@ pub struct TensorSignedDecompositionLendingIter<'buffers, Scalar: UnsignedIntege
     // ...0001111
     mod_b_mask: Scalar,
     // The internal states of each decomposition
-    states: DynArray<'buffers, Scalar>,
+    states: &'buffers mut [Scalar],
     // A flag which stores whether the iterator is a fresh one (for the recompose method).
     fresh: bool,
 }
@@ -29,11 +29,9 @@ impl<'buffers, Scalar: UnsignedInteger> TensorSignedDecompositionLendingIter<'bu
         input: impl Iterator<Item = Scalar>,
         base_log: DecompositionBaseLog,
         level: DecompositionLevelCount,
-        stack: PodStack<'buffers>,
-    ) -> (Self, PodStack<'buffers>) {
-        let shift = Scalar::BITS - base_log.0 * level.0;
-        let (states, stack) =
-            stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, input.map(|i| i >> shift));
+        stack: &'buffers mut PodStack,
+    ) -> (Self, &'buffers mut PodStack) {
+        let (states, stack) = stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, input);
         (
             TensorSignedDecompositionLendingIter {
                 base_log: base_log.0,
@@ -48,6 +46,11 @@ impl<'buffers, Scalar: UnsignedInteger> TensorSignedDecompositionLendingIter<'bu
 
     // inlining this improves perf of external product by about 25%, even in LTO builds
     #[inline]
+    #[allow(
+        clippy::type_complexity,
+        reason = "The type complexity would require a pub type = ...; \
+        but impl Trait is not stable in pub type so we tell clippy to leave us alone"
+    )]
     pub fn next_term<'short>(
         &'short mut self,
     ) -> Option<(

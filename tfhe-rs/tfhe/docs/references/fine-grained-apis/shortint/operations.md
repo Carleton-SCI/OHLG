@@ -8,7 +8,7 @@ In `shortint`, the encrypted data is stored in an LWE ciphertext.
 
 Conceptually, the message stored in an LWE ciphertext is divided into a **carry buffer** and a **message buffer**.
 
-![](../../../\_static/ciphertext-representation.png)
+![](../../../.gitbook/assets/ciphertext-representation.png)
 
 The message buffer is the space where the actual message is stored. This represents the modulus of the input messages (denoted by `MessageModulus` in the code). When doing computations on a ciphertext, the encrypted message can overflow the message modulus. The part of the message which exceeds the message modulus is stored in the carry buffer. The size of the carry buffer is defined by another modulus, called `CarryModulus`.
 
@@ -59,7 +59,7 @@ fn main() {
     let msg2 = 3;
     let scalar = 4;
 
-    let modulus = client_key.parameters.message_modulus().0;
+    let modulus = client_key.parameters().message_modulus().0;
 
     // We use the client key to encrypt two messages:
     let mut ct_1 = client_key.encrypt(msg1);
@@ -71,7 +71,7 @@ fn main() {
 
     // We use the client key to decrypt the output of the circuit:
     let output = client_key.decrypt(&ct_1);
-    println!("expected {}, found {}", ((msg1 * scalar as u64 - msg2) * msg2) % modulus as u64, output);
+    println!("expected {}, found {}", ((msg1 * scalar as u64 - msg2) * msg2) % modulus, output);
 }
 ```
 
@@ -91,7 +91,7 @@ fn main() {
     let msg2 = 3;
     let scalar = 4;
 
-    let modulus = client_key.parameters.message_modulus().0;
+    let modulus = client_key.parameters().message_modulus().0;
 
     // We use the client key to encrypt two messages:
     let mut ct_1 = client_key.encrypt(msg1);
@@ -107,14 +107,14 @@ fn main() {
     match ops() {
         Ok(_) => (),
         Err(e) => {
-            println!("correctness of operations is not guaranteed due to error: {}", e);
+            println!("correctness of operations is not guaranteed due to error: {e}");
             return;
         },
     }
 
     // We use the client key to decrypt the output of the circuit:
     let output = client_key.decrypt(&ct_1);
-    assert_eq!(output, ((msg1 * scalar as u64 - msg2) * msg2) % modulus as u64);
+    assert_eq!(output, ((msg1 * scalar as u64 - msg2) * msg2) % modulus);
 }
 ```
 
@@ -134,7 +134,7 @@ fn main() {
     let msg2 = 3;
     let scalar = 4;
 
-    let modulus = client_key.parameters.message_modulus().0;
+    let modulus = client_key.parameters().message_modulus().0;
 
     // We use the client key to encrypt two messages:
     let mut ct_1 = client_key.encrypt(msg1);
@@ -146,7 +146,7 @@ fn main() {
 
     // We use the client key to decrypt the output of the circuit:
     let output = client_key.decrypt(&ct_1);
-    assert_eq!(output, ((msg1 * scalar as u64 - msg2) * msg2) % modulus as u64);
+    assert_eq!(output, ((msg1 * scalar as u64 - msg2) * msg2) % modulus);
 }
 ```
 
@@ -168,11 +168,11 @@ fn main() {
     let msg2 = 3;
     let scalar = 4;
 
-    let modulus = client_key.parameters.message_modulus().0;
+    let modulus = client_key.parameters().message_modulus().0;
 
     // We use the client key to encrypt two messages:
     let mut ct_1 = client_key.encrypt(msg1);
-    let mut ct_2 = client_key.encrypt(msg2);
+    let ct_2 = client_key.encrypt(msg2);
 
     server_key.scalar_mul_assign(&mut ct_1, scalar);
     server_key.sub_assign(&mut ct_1, &ct_2);
@@ -180,7 +180,7 @@ fn main() {
 
     // We use the client key to decrypt the output of the circuit:
     let output = client_key.decrypt(&ct_1);
-    assert_eq!(output, ((msg1 * scalar as u64 - msg2) * msg2) % modulus as u64);
+    assert_eq!(output, ((msg1 * scalar as u64 - msg2) * msg2) % modulus);
 }
 ```
 
@@ -244,7 +244,7 @@ fn main() {
     let msg1 = 2;
     let msg2 = 1;
 
-    let modulus = client_key.parameters.message_modulus().0;
+    let modulus = client_key.parameters().message_modulus().0;
 
     // We use the private client key to encrypt two messages:
     let ct_1 = client_key.encrypt(msg1);
@@ -255,7 +255,7 @@ fn main() {
 
     // We use the client key to decrypt the output of the circuit:
     let output = client_key.decrypt(&ct_3);
-    assert_eq!(output, (msg1 + msg2) % modulus as u64);
+    assert_eq!(output, (msg1 + msg2) % modulus);
 }
 ```
 
@@ -275,7 +275,7 @@ fn main() {
     let msg1 = 2;
     let msg2 = 1;
 
-    let modulus = client_key.parameters.message_modulus().0;
+    let modulus = client_key.parameters().message_modulus().0;
 
     // We use the private client key to encrypt two messages:
     let ct_1 = client_key.encrypt(msg1);
@@ -286,7 +286,7 @@ fn main() {
 
     // We use the client key to decrypt the output of the circuit:
     let output = client_key.decrypt(&ct_3);
-    assert_eq!(output, (msg1 & msg2) % modulus as u64);
+    assert_eq!(output, (msg1 & msg2) % modulus);
 }
 ```
 
@@ -306,7 +306,7 @@ fn main() {
     let msg1 = 2;
     let msg2 = 1;
 
-    let modulus = client_key.parameters.message_modulus().0;
+    let modulus = client_key.parameters().message_modulus().0;
 
     // We use the private client key to encrypt two messages:
     let ct_1 = client_key.encrypt(msg1);
@@ -317,7 +317,7 @@ fn main() {
 
     // We use the client key to decrypt the output of the circuit:
     let output = client_key.decrypt(&ct_3);
-    assert_eq!(output, (msg1 >= msg2) as u64 % modulus as u64);
+    assert_eq!(output, (msg1 >= msg2) as u64 % modulus);
 }
 ```
 
@@ -333,8 +333,6 @@ fn main() {
     let (client_key, server_key) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
 
     let msg1 = 3;
-
-    let modulus = client_key.parameters.message_modulus().0;
 
     // We use the private client key to encrypt a message:
     let ct_1 = client_key.encrypt(msg1);
@@ -367,7 +365,7 @@ fn main() {
     let msg1 = 3;
     let msg2 = 2;
 
-    let modulus = client_key.parameters.message_modulus().0 as u64;
+    let modulus = client_key.parameters().message_modulus().0;
 
     // We use the private client key to encrypt two messages:
     let ct_1 = client_key.encrypt(msg1);

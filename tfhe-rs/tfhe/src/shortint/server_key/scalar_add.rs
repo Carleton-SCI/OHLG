@@ -1,11 +1,12 @@
 use super::CiphertextNoiseDegree;
 use crate::core_crypto::algorithms::*;
 use crate::core_crypto::entities::*;
+use crate::shortint::atomic_pattern::AtomicPattern;
 use crate::shortint::ciphertext::Degree;
-use crate::shortint::server_key::CheckError;
-use crate::shortint::{Ciphertext, ServerKey};
+use crate::shortint::server_key::{CheckError, GenericServerKey};
+use crate::shortint::{Ciphertext, PaddingBit};
 
-impl ServerKey {
+impl<AP: AtomicPattern> GenericServerKey<AP> {
     /// Compute homomorphically an addition between a ciphertext and a scalar.
     ///
     /// The result is returned in a _new_ ciphertext.
@@ -22,9 +23,7 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
@@ -43,23 +42,7 @@ impl ServerKey {
     ///
     /// // Our result is what we expect
     /// let clear = cks.decrypt(&ct_res);
-    /// let modulus = cks.parameters.message_modulus().0 as u64;
-    /// assert_eq!((msg + scalar as u64) % modulus, clear);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
-    ///
-    /// // Encrypt a message
-    /// let ct = cks.encrypt(msg);
-    ///
-    /// // Compute homomorphically a scalar multiplication:
-    /// let ct_res = sks.scalar_add(&ct, scalar);
-    ///
-    /// // The input ciphertext content is not changed
-    /// assert_eq!(cks.decrypt(&ct), msg);
-    ///
-    /// // Our result is what we expect
-    /// let clear = cks.decrypt(&ct_res);
-    /// let modulus = cks.parameters.message_modulus().0 as u64;
+    /// let modulus = cks.parameters().message_modulus().0;
     /// assert_eq!((msg + scalar as u64) % modulus, clear);
     /// ```
     pub fn scalar_add(&self, ct: &Ciphertext, scalar: u8) -> Ciphertext {
@@ -84,9 +67,7 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
@@ -103,27 +84,12 @@ impl ServerKey {
     /// // Our result is what we expect
     /// let clear = cks.decrypt(&ct);
     /// assert_eq!(
-    ///     (msg + scalar as u64) % cks.parameters.message_modulus().0 as u64,
-    ///     clear
-    /// );
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
-    ///
-    /// // Encrypt a message
-    /// let mut ct = cks.encrypt(msg);
-    ///
-    /// // Compute homomorphically a scalar multiplication:
-    /// sks.scalar_add_assign(&mut ct, scalar);
-    ///
-    /// // Our result is what we expect
-    /// let clear = cks.decrypt(&ct);
-    /// assert_eq!(
-    ///     (msg + scalar as u64) % cks.parameters.message_modulus().0 as u64,
+    ///     (msg + scalar as u64) % cks.parameters().message_modulus().0,
     ///     clear
     /// );
     /// ```
     pub fn scalar_add_assign(&self, ct: &mut Ciphertext, scalar: u8) {
-        let modulus = self.message_modulus.0 as u64;
+        let modulus = self.message_modulus.0;
         let acc = self.generate_lookup_table(|x| (scalar as u64 + x) % modulus);
         self.apply_lookup_table_assign(ct, &acc);
     }
@@ -138,23 +104,10 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
-    ///
-    /// // Encrypt a message
-    /// let ct = cks.encrypt(1);
-    ///
-    /// // Compute homomorphically a scalar addition:
-    /// let ct_res = sks.unchecked_scalar_add(&ct, 2);
-    ///
-    /// let clear = cks.decrypt(&ct_res);
-    /// assert_eq!(3, clear);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt a message
     /// let ct = cks.encrypt(1);
@@ -181,23 +134,10 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
-    ///
-    /// // Encrypt a message
-    /// let mut ct = cks.encrypt(1);
-    ///
-    /// // Compute homomorphically a scalar addition:
-    /// sks.unchecked_scalar_add_assign(&mut ct, 2);
-    ///
-    /// let clear = cks.decrypt(&ct);
-    /// assert_eq!(3, clear);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt a message
     /// let mut ct = cks.encrypt(1);
@@ -209,12 +149,12 @@ impl ServerKey {
     /// assert_eq!(3, clear);
     /// ```
     pub fn unchecked_scalar_add_assign(&self, ct: &mut Ciphertext, scalar: u8) {
-        let delta = (1_u64 << 63) / (self.message_modulus.0 * self.carry_modulus.0) as u64;
-        let shift_plaintext = u64::from(scalar) * delta;
-        let encoded_scalar = Plaintext(shift_plaintext);
+        let encoded_scalar = self
+            .encoding(PaddingBit::Yes)
+            .encode(Cleartext(u64::from(scalar)));
         lwe_ciphertext_plaintext_add_assign(&mut ct.ct, encoded_scalar);
 
-        ct.degree = Degree::new(ct.degree.get() + scalar as usize);
+        ct.degree = Degree::new(ct.degree.get() + u64::from(scalar));
     }
 
     /// Verify if a scalar can be added to the ciphertext.
@@ -223,20 +163,10 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
-    ///
-    /// // Encrypt a message
-    /// let ct = cks.encrypt(2);
-    ///
-    /// // Verification if the scalar addition can be computed:
-    /// sks.is_scalar_add_possible(ct.noise_degree(), 3).unwrap();
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt a message
     /// let ct = cks.encrypt(2);
@@ -249,7 +179,7 @@ impl ServerKey {
         ct: CiphertextNoiseDegree,
         scalar: u8,
     ) -> Result<(), CheckError> {
-        let final_degree = scalar as usize + ct.degree.get();
+        let final_degree = u64::from(scalar) + ct.degree.get();
 
         self.max_degree.validate(Degree::new(final_degree))
     }
@@ -263,23 +193,10 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
-    ///
-    /// // Encrypt a message
-    /// let ct = cks.encrypt(1);
-    ///
-    /// // Compute homomorphically a addition multiplication:
-    /// let ct_res = sks.checked_scalar_add(&ct, 2).unwrap();
-    ///
-    /// let clear_res = cks.decrypt(&ct_res);
-    /// assert_eq!(clear_res, 3);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt a message
     /// let ct = cks.encrypt(1);
@@ -311,23 +228,10 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
-    ///
-    /// // Encrypt a message
-    /// let mut ct = cks.encrypt(1);
-    ///
-    /// // Compute homomorphically a scalar addition:
-    /// sks.checked_scalar_add_assign(&mut ct, 2).unwrap();
-    ///
-    /// let clear_res = cks.decrypt(&ct);
-    /// assert_eq!(clear_res, 3);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt a message
     /// let mut ct = cks.encrypt(1);
@@ -359,9 +263,7 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
@@ -380,23 +282,7 @@ impl ServerKey {
     ///
     /// // Our result is what we expect
     /// let clear = cks.decrypt(&ct_res);
-    /// let modulus = cks.parameters.message_modulus().0 as u64;
-    /// assert_eq!(2, clear % modulus);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
-    ///
-    /// // Encrypt a message
-    /// let mut ct = cks.encrypt(msg);
-    ///
-    /// // Compute homomorphically a scalar multiplication:
-    /// let ct_res = sks.smart_scalar_add(&mut ct, scalar);
-    ///
-    /// // The input ciphertext content is not changed
-    /// assert_eq!(cks.decrypt(&ct), msg);
-    ///
-    /// // Our result is what we expect
-    /// let clear = cks.decrypt(&ct_res);
-    /// let modulus = cks.parameters.message_modulus().0 as u64;
+    /// let modulus = cks.parameters().message_modulus().0;
     /// assert_eq!(2, clear % modulus);
     /// ```
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -418,27 +304,13 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
     ///
     /// let msg = 1_u64;
     /// let scalar = 5_u8;
-    ///
-    /// // Encrypt a message
-    /// let mut ct = cks.encrypt(msg);
-    ///
-    /// // Compute homomorphically a scalar multiplication:
-    /// sks.smart_scalar_add_assign(&mut ct, scalar);
-    ///
-    /// // Our result is what we expect
-    /// let clear = cks.decrypt_message_and_carry(&ct);
-    /// assert_eq!(6, clear);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt a message
     /// let mut ct = cks.encrypt(msg);

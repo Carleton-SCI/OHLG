@@ -4,19 +4,18 @@
 use crate::core_crypto::algorithms::slice_algorithms::*;
 use crate::core_crypto::algorithms::*;
 use crate::core_crypto::commons::ciphertext_modulus::CiphertextModulusKind;
-use crate::core_crypto::commons::generators::{EncryptionRandomGenerator, SecretRandomGenerator};
+use crate::core_crypto::commons::generators::{
+    EncryptionRandomGenerator, NoiseRandomGenerator, SecretRandomGenerator,
+};
 #[cfg(feature = "zk-pok")]
 use crate::core_crypto::commons::math::random::BoundedDistribution;
 use crate::core_crypto::commons::math::random::{
-    ActivatedRandomGenerator, Distribution, RandomGenerable, RandomGenerator, Uniform,
-    UniformBinary,
+    DefaultRandomGenerator, Distribution, RandomGenerable, RandomGenerator, Uniform, UniformBinary,
 };
 use crate::core_crypto::commons::parameters::*;
 use crate::core_crypto::commons::traits::*;
 use crate::core_crypto::entities::*;
 use rayon::prelude::*;
-#[cfg(feature = "zk-pok")]
-use tfhe_zk_pok::proofs::pke::{commit, prove};
 
 /// Convenience function to share the core logic of the LWE encryption between all functions needing
 /// it.
@@ -122,7 +121,7 @@ pub fn fill_lwe_mask_and_body_for_encryption_native_mod_compatible<
             *output_body.data = (*output_body.data).wrapping_mul(torus_scaling);
         }
         CiphertextModulusKind::Other => unreachable!(),
-    };
+    }
 }
 
 pub fn fill_lwe_mask_and_body_for_encryption_other_mod<
@@ -202,9 +201,8 @@ pub fn fill_lwe_mask_and_body_for_encryption_other_mod<
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -294,9 +292,8 @@ pub fn encrypt_lwe_ciphertext<Scalar, NoiseDistribution, KeyCont, OutputCont, Ge
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -382,8 +379,7 @@ where
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the plaintext
 /// let msg = 3u64;
@@ -456,15 +452,14 @@ pub fn trivially_encrypt_lwe_ciphertext<Scalar, OutputCont>(
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the plaintext
 /// let msg = 3u64;
 /// let plaintext = Plaintext(msg << 60);
 ///
 /// // Create a new LweCiphertext
-/// let mut lwe = allocate_and_trivially_encrypt_new_lwe_ciphertext(
+/// let lwe = allocate_and_trivially_encrypt_new_lwe_ciphertext(
 ///     lwe_dimension.to_lwe_size(),
 ///     plaintext,
 ///     ciphertext_modulus,
@@ -636,9 +631,8 @@ where
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -747,9 +741,8 @@ pub fn encrypt_lwe_ciphertext_list<Scalar, NoiseDistribution, KeyCont, OutputCon
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -901,9 +894,8 @@ pub fn decrypt_lwe_ciphertext_list<Scalar, KeyCont, InputCont, OutputCont>(
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -1018,10 +1010,7 @@ pub fn encrypt_lwe_ciphertext_with_public_key<Scalar, KeyCont, OutputCont, Gen>(
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -1119,10 +1108,7 @@ pub fn encrypt_lwe_ciphertext_with_seeded_public_key<Scalar, KeyCont, OutputCont
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -1238,7 +1224,7 @@ pub fn encrypt_lwe_ciphertext_iterator_with_seeded_public_key<Scalar, KeyCont, O
     );
 
     let mut random_generator =
-        RandomGenerator::<ActivatedRandomGenerator>::new(lwe_public_key.compression_seed().seed);
+        RandomGenerator::<DefaultRandomGenerator>::new(lwe_public_key.compression_seed().seed);
 
     // Add the public encryption of zeros to get the zero encryption
     for public_encryption_of_zero_body in lwe_public_key.iter() {
@@ -1272,7 +1258,10 @@ pub fn encrypt_lwe_ciphertext_iterator_with_seeded_public_key<Scalar, KeyCont, O
 
 /// Convenience function to share the core logic of the seeded LWE encryption between all functions
 /// needing it.
-pub fn encrypt_seeded_lwe_ciphertext_list_with_existing_generator<
+///
+/// WARNING: this assumes the caller manages the coherency of calls to the generator to make sure
+/// the right bytes are generated at the right time.
+pub fn encrypt_seeded_lwe_ciphertext_list_with_pre_seeded_generator<
     Scalar,
     NoiseDistribution,
     KeyCont,
@@ -1349,10 +1338,7 @@ pub fn encrypt_seeded_lwe_ciphertext_list_with_existing_generator<
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -1426,12 +1412,12 @@ pub fn encrypt_seeded_lwe_ciphertext_list<
     // Maybe Sized allows to pass Box<dyn Seeder>.
     NoiseSeeder: Seeder + ?Sized,
 {
-    let mut generator = EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+    let mut generator = EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
         output.compression_seed().seed,
         noise_seeder,
     );
 
-    encrypt_seeded_lwe_ciphertext_list_with_existing_generator(
+    encrypt_seeded_lwe_ciphertext_list_with_pre_seeded_generator(
         lwe_secret_key,
         output,
         encoded,
@@ -1442,7 +1428,10 @@ pub fn encrypt_seeded_lwe_ciphertext_list<
 
 /// Convenience function to share the core logic of the seeded LWE encryption between all functions
 /// needing it.
-pub fn par_encrypt_seeded_lwe_ciphertext_list_with_existing_generator<
+///
+/// WARNING: this assumes the caller manages the coherency of calls to the generator to make sure
+/// the right bytes are generated at the right time.
+pub fn par_encrypt_seeded_lwe_ciphertext_list_with_pre_seeded_generator<
     Scalar,
     NoiseDistribution,
     KeyCont,
@@ -1520,10 +1509,7 @@ pub fn par_encrypt_seeded_lwe_ciphertext_list_with_existing_generator<
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -1597,12 +1583,12 @@ pub fn par_encrypt_seeded_lwe_ciphertext_list<
     // Maybe Sized allows to pass Box<dyn Seeder>.
     NoiseSeeder: Seeder + ?Sized,
 {
-    let mut generator = EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+    let mut generator = EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
         output.compression_seed().seed,
         noise_seeder,
     );
 
-    par_encrypt_seeded_lwe_ciphertext_list_with_existing_generator(
+    par_encrypt_seeded_lwe_ciphertext_list_with_pre_seeded_generator(
         lwe_secret_key,
         output,
         encoded,
@@ -1613,7 +1599,10 @@ pub fn par_encrypt_seeded_lwe_ciphertext_list<
 
 /// Convenience function to share the core logic of the seeded LWE encryption between all functions
 /// needing it.
-pub fn encrypt_seeded_lwe_ciphertext_with_existing_generator<
+///
+/// WARNING: this assumes the caller manages the coherency of calls to the generator to make sure
+/// the right bytes are generated at the right time.
+pub fn encrypt_seeded_lwe_ciphertext_with_pre_seeded_generator<
     Scalar,
     NoiseDistribution,
     KeyCont,
@@ -1666,8 +1655,7 @@ pub fn encrypt_seeded_lwe_ciphertext_with_existing_generator<
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -1722,12 +1710,12 @@ pub fn encrypt_seeded_lwe_ciphertext<Scalar, NoiseDistribution, KeyCont, NoiseSe
     // Maybe Sized allows to pass Box<dyn Seeder>.
     NoiseSeeder: Seeder + ?Sized,
 {
-    let mut encryption_generator = EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+    let mut encryption_generator = EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
         output.compression_seed().seed,
         noise_seeder,
     );
 
-    encrypt_seeded_lwe_ciphertext_with_existing_generator(
+    encrypt_seeded_lwe_ciphertext_with_pre_seeded_generator(
         lwe_secret_key,
         output,
         encoded,
@@ -1758,8 +1746,7 @@ pub fn encrypt_seeded_lwe_ciphertext<Scalar, NoiseDistribution, KeyCont, NoiseSe
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -1770,7 +1757,7 @@ pub fn encrypt_seeded_lwe_ciphertext<Scalar, NoiseDistribution, KeyCont, NoiseSe
 /// let plaintext = Plaintext(msg << 60);
 ///
 /// // Create a new SeededLweCiphertext
-/// let mut lwe = allocate_and_encrypt_new_seeded_lwe_ciphertext(
+/// let lwe = allocate_and_encrypt_new_seeded_lwe_ciphertext(
 ///     &lwe_secret_key,
 ///     plaintext,
 ///     lwe_noise_distribution,
@@ -1855,7 +1842,7 @@ fn verify_zero_knowledge_preconditions<Scalar, KeyCont, MaskDistribution, BodyDi
     delta: Scalar,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: BodyDistribution,
-    public_params: &CompactPkePublicParams,
+    crs: &CompactPkeCrs,
 ) -> crate::Result<()>
 where
     Scalar: UnsignedInteger + CastFrom<u64>,
@@ -1866,14 +1853,7 @@ where
     BodyDistribution: BoundedDistribution<Scalar::Signed>,
     KeyCont: Container<Element = Scalar>,
 {
-    let exclusive_max = public_params.exclusive_max_noise();
-    if Scalar::BITS < 64 && (1u64 << Scalar::BITS) >= exclusive_max {
-        return Err(
-            "The given random distribution would create random values out \
-            of the expected bounds of given to the CRS"
-                .into(),
-        );
-    }
+    let exclusive_max = crs.exclusive_max_noise();
 
     if mask_noise_distribution.contains(exclusive_max.cast_into()) {
         // The proof expect noise bound between [-b, b) (aka -b..b)
@@ -1900,28 +1880,23 @@ where
         return Err("Zero knowledge proof do not support moduli greater than 2**64".into());
     }
 
-    let expected_q = if Scalar::BITS == 64 {
-        0u64
-    } else {
-        164 << Scalar::BITS
-    };
-
-    if expected_q != public_params.q {
+    if ciphertext_modulus != crs.ciphertext_modulus() {
         return Err("Mismatched modulus between CRS and ciphertexts".into());
     }
 
-    if ciphertext_count.0 > public_params.k {
+    if ciphertext_count > crs.max_num_messages() {
         return Err(format!(
             "CRS allows at most {} ciphertexts to be proven at once, {} contained in the list",
-            public_params.k, ciphertext_count.0
+            crs.max_num_messages().0,
+            ciphertext_count.0
         )
         .into());
     }
 
-    if lwe_compact_public_key.lwe_dimension().0 > public_params.d {
+    if lwe_compact_public_key.lwe_dimension() > crs.lwe_dimension() {
         return Err(format!(
             "CRS allows a LweDimension of at most {}, current dimension: {}",
-            public_params.d,
+            crs.lwe_dimension().0,
             lwe_compact_public_key.lwe_dimension().0
         )
         .into());
@@ -1929,10 +1904,10 @@ where
 
     // 2**64 /delta == ((2**63) / delta) *2
     let plaintext_modulus = ((1u64 << (u64::BITS - 1) as usize) / u64::cast_from(delta)) * 2;
-    if plaintext_modulus != public_params.t {
+    if plaintext_modulus != crs.plaintext_modulus() {
         return Err(format!(
             "Mismatched plaintext modulus: CRS expects {}, requested modulus: {plaintext_modulus:?}",
-            public_params.t
+            crs.plaintext_modulus()
         ).into());
     }
 
@@ -1945,7 +1920,6 @@ fn encrypt_lwe_ciphertext_with_compact_public_key_impl<
     OutputCont,
     MaskDistribution,
     NoiseDistribution,
-    SecretGen,
     EncryptionGen,
 >(
     lwe_compact_public_key: &LweCompactPublicKey<KeyCont>,
@@ -1953,8 +1927,7 @@ fn encrypt_lwe_ciphertext_with_compact_public_key_impl<
     encoded: Plaintext<Scalar>,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
 ) -> CompactPublicKeyRandomVectors<Scalar>
 where
     Scalar: Encryptable<MaskDistribution, NoiseDistribution> + RandomGenerable<UniformBinary>,
@@ -1962,7 +1935,6 @@ where
     OutputCont: ContainerMut<Element = Scalar>,
     MaskDistribution: Distribution,
     NoiseDistribution: Distribution,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ByteRandomGenerator,
 {
     assert!(
@@ -1987,15 +1959,13 @@ where
     );
 
     let mut binary_random_vector = vec![Scalar::ZERO; lwe_compact_public_key.lwe_dimension().0];
-    secret_generator.fill_slice_with_random_uniform_binary(&mut binary_random_vector);
+    noise_generator.fill_slice_with_random_uniform_binary_bits(&mut binary_random_vector);
 
     let mut mask_noise = vec![Scalar::ZERO; lwe_compact_public_key.lwe_dimension().0];
-    encryption_generator
+    noise_generator
         .fill_slice_with_random_noise_from_distribution(&mut mask_noise, mask_noise_distribution);
 
-    let body_noise = vec![Scalar::ZERO; 1];
-    encryption_generator
-        .fill_slice_with_random_noise_from_distribution(&mut mask_noise, body_noise_distribution);
+    let body_noise = noise_generator.random_noise_from_distribution(body_noise_distribution);
 
     {
         let (mut ct_mask, ct_body) = output.get_mut_mask_and_body();
@@ -2015,7 +1985,7 @@ where
         {
             *ct_body.data = slice_wrapping_dot_product(pk_body.as_ref(), &binary_random_vector);
             // Noise from Chi_2 for the body part of the encryption
-            *ct_body.data = (*ct_body.data).wrapping_add(body_noise[0]);
+            *ct_body.data = (*ct_body.data).wrapping_add(body_noise);
             *ct_body.data = (*ct_body.data).wrapping_add(encoded.0);
         }
     }
@@ -2023,7 +1993,7 @@ where
     CompactPublicKeyRandomVectors {
         binary_random_vector,
         mask_noise,
-        body_noise,
+        body_noise: vec![body_noise],
     }
 }
 
@@ -2048,9 +2018,8 @@ where
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -2076,8 +2045,7 @@ where
 ///     plaintext,
 ///     glwe_noise_distribution,
 ///     glwe_noise_distribution,
-///     &mut secret_generator,
-///     &mut encryption_generator,
+///     encryption_generator.noise_generator_mut(),
 /// );
 ///
 /// let decrypted_plaintext = decrypt_lwe_ciphertext(&lwe_secret_key, &lwe);
@@ -2100,7 +2068,6 @@ pub fn encrypt_lwe_ciphertext_with_compact_public_key<
     NoiseDistribution,
     KeyCont,
     OutputCont,
-    SecretGen,
     EncryptionGen,
 >(
     lwe_compact_public_key: &LweCompactPublicKey<KeyCont>,
@@ -2108,15 +2075,13 @@ pub fn encrypt_lwe_ciphertext_with_compact_public_key<
     encoded: Plaintext<Scalar>,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
 ) where
     Scalar: Encryptable<MaskDistribution, NoiseDistribution> + RandomGenerable<UniformBinary>,
     MaskDistribution: Distribution,
     NoiseDistribution: Distribution,
     KeyCont: Container<Element = Scalar>,
     OutputCont: ContainerMut<Element = Scalar>,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ByteRandomGenerator,
 {
     let _ = encrypt_lwe_ciphertext_with_compact_public_key_impl(
@@ -2125,8 +2090,7 @@ pub fn encrypt_lwe_ciphertext_with_compact_public_key<
         encoded,
         mask_noise_distribution,
         body_noise_distribution,
-        secret_generator,
-        encryption_generator,
+        noise_generator,
     );
 }
 
@@ -2142,6 +2106,7 @@ pub fn encrypt_lwe_ciphertext_with_compact_public_key<
 /// ```rust
 /// use tfhe::core_crypto::commons::math::random::RandomGenerator;
 /// use tfhe::core_crypto::prelude::*;
+/// use tfhe::zk::ZkMSBZeroPaddingBitCount;
 ///
 /// // DISCLAIMER: these toy example parameters are not guaranteed to be secure or yield correct
 /// // computations
@@ -2149,18 +2114,24 @@ pub fn encrypt_lwe_ciphertext_with_compact_public_key<
 /// let lwe_dimension = LweDimension(2048);
 /// let glwe_noise_distribution = TUniform::new(9);
 /// let ciphertext_modulus = CiphertextModulus::new_native();
-/// let delta_log = 60;
+/// let delta_log = 59;
 /// let delta = 1u64 << delta_log;
-/// let plaintext_modulus = 1u64 << (64 - delta_log);
+/// let msb_zero_padding_bit_count = ZkMSBZeroPaddingBitCount(1);
+/// let plaintext_modulus = 1u64 << (64 - delta_log - msb_zero_padding_bit_count.0);
+/// // We need the padding bit in the plaintext modulus for the ZK
+/// let zk_plaintext_modulus = plaintext_modulus << msb_zero_padding_bit_count.0;
+///
+/// // We can add custom metadata that will be required for verification, allowing to tie the proof
+/// // to some arbitrary data.
+/// let metadata = [b'T', b'F', b'H', b'E', b'-', b'r', b's'];
 ///
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
-/// let mut random_generator = RandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
+/// let mut random_generator = RandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -2175,10 +2146,11 @@ pub fn encrypt_lwe_ciphertext_with_compact_public_key<
 ///
 /// let crs = CompactPkeCrs::new(
 ///     lwe_dimension,
-///     1,
+///     LweCiphertextCount(1),
 ///     glwe_noise_distribution,
 ///     ciphertext_modulus,
-///     plaintext_modulus,
+///     zk_plaintext_modulus,
+///     msb_zero_padding_bit_count,
 ///     &mut random_generator,
 /// )
 /// .unwrap();
@@ -2196,30 +2168,32 @@ pub fn encrypt_lwe_ciphertext_with_compact_public_key<
 ///     delta,
 ///     glwe_noise_distribution,
 ///     glwe_noise_distribution,
-///     &mut secret_generator,
-///     &mut encryption_generator,
+///     encryption_generator.noise_generator_mut(),
 ///     &mut random_generator,
-///     crs.public_params(),
+///     &crs,
+///     &metadata,
 ///     ZkComputeLoad::Proof,
 /// )
 /// .unwrap();
 ///
 /// // verify the ciphertext list with the proof
 /// assert!(
-///     verify_lwe_ciphertext(&lwe, &lwe_compact_public_key, &proof, crs.public_params())
-///         .is_valid()
+///     verify_lwe_ciphertext(&lwe, &lwe_compact_public_key, &proof, &crs, &metadata).is_valid()
 /// );
 ///
 /// let decrypted_plaintext = decrypt_lwe_ciphertext(&lwe_secret_key, &lwe);
 ///
 /// // Round and remove encoding
 /// // First create a decomposer working on the high 4 bits corresponding to our encoding.
-/// let decomposer = SignedDecomposer::new(DecompositionBaseLog(4), DecompositionLevelCount(1));
+/// let decomposer = SignedDecomposer::new(
+///     DecompositionBaseLog((64 - delta_log) as usize),
+///     DecompositionLevelCount(1),
+/// );
 ///
 /// let rounded = decomposer.closest_representable(decrypted_plaintext.0);
 ///
 /// // Remove the encoding
-/// let cleartext = rounded >> 60;
+/// let cleartext = rounded >> delta_log;
 ///
 /// // Check we recovered the original message
 /// assert_eq!(cleartext, msg.0);
@@ -2232,7 +2206,6 @@ pub fn encrypt_and_prove_lwe_ciphertext_with_compact_public_key<
     OutputCont,
     MaskDistribution,
     NoiseDistribution,
-    SecretGen,
     EncryptionGen,
     G,
 >(
@@ -2242,10 +2215,10 @@ pub fn encrypt_and_prove_lwe_ciphertext_with_compact_public_key<
     delta: Scalar,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
     random_generator: &mut RandomGenerator<G>,
-    public_params: &CompactPkePublicParams,
+    crs: &CompactPkeCrs,
+    metadata: &[u8],
     load: ZkComputeLoad,
 ) -> crate::Result<CompactPkeProof>
 where
@@ -2259,7 +2232,6 @@ where
     OutputCont: ContainerMut<Element = Scalar>,
     MaskDistribution: BoundedDistribution<Scalar::Signed>,
     NoiseDistribution: BoundedDistribution<Scalar::Signed>,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ByteRandomGenerator,
     G: ByteRandomGenerator,
 {
@@ -2270,7 +2242,7 @@ where
         delta,
         mask_noise_distribution,
         body_noise_distribution,
-        public_params,
+        crs,
     )?;
 
     let CompactPublicKeyRandomVectors {
@@ -2283,56 +2255,22 @@ where
         Plaintext(message.0 * delta),
         mask_noise_distribution,
         body_noise_distribution,
-        secret_generator,
-        encryption_generator,
+        noise_generator,
     );
 
-    let (c1, c2) = output.get_mask_and_body();
-
-    let (public_commit, private_commit) = commit(
-        lwe_compact_public_key
-            .get_mask()
-            .as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        lwe_compact_public_key
-            .get_body()
-            .as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        c1.as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        vec![i64::cast_from(*c2.data)],
-        binary_random_vector
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        mask_noise
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        vec![i64::cast_from(message.0)],
-        body_noise
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        public_params,
-        random_generator,
-    );
-
-    Ok(prove(
-        (public_params, &public_commit),
-        &private_commit,
+    Ok(crs.prove(
+        lwe_compact_public_key,
+        &vec![message.0],
+        &LweCompactCiphertextList::from_container(
+            output.as_ref(),
+            output.lwe_size(),
+            LweCiphertextCount(1),
+            output.ciphertext_modulus(),
+        ),
+        &binary_random_vector,
+        &mask_noise,
+        &body_noise,
+        metadata,
         load,
         random_generator,
     ))
@@ -2345,7 +2283,6 @@ fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key_impl<
     OutputCont,
     MaskDistribution,
     NoiseDistribution,
-    SecretGen,
     EncryptionGen,
 >(
     lwe_compact_public_key: &LweCompactPublicKey<KeyCont>,
@@ -2353,8 +2290,7 @@ fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key_impl<
     encoded: &PlaintextList<InputCont>,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
 ) -> CompactPublicKeyRandomVectors<Scalar>
 where
     Scalar: Encryptable<MaskDistribution, NoiseDistribution> + RandomGenerable<UniformBinary>,
@@ -2363,7 +2299,6 @@ where
     OutputCont: ContainerMut<Element = Scalar>,
     MaskDistribution: Distribution,
     NoiseDistribution: Distribution,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ByteRandomGenerator,
 {
     assert!(
@@ -2399,14 +2334,14 @@ where
     let (mut output_mask_list, mut output_body_list) = output.get_mut_mask_and_body_list();
 
     let mut binary_random_vector = vec![Scalar::ZERO; output_mask_list.lwe_mask_list_size()];
-    secret_generator.fill_slice_with_random_uniform_binary(&mut binary_random_vector);
+    noise_generator.fill_slice_with_random_uniform_binary_bits(&mut binary_random_vector);
 
     let mut mask_noise = vec![Scalar::ZERO; output_mask_list.lwe_mask_list_size()];
-    encryption_generator
+    noise_generator
         .fill_slice_with_random_noise_from_distribution(&mut mask_noise, mask_noise_distribution);
 
     let mut body_noise = vec![Scalar::ZERO; encoded.plaintext_count().0];
-    encryption_generator
+    noise_generator
         .fill_slice_with_random_noise_from_distribution(&mut body_noise, body_noise_distribution);
 
     let max_ciphertext_per_bin = lwe_compact_public_key.lwe_dimension().0;
@@ -2496,10 +2431,9 @@ where
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
 ///
 /// // Create the LweSecretKey
 /// let lwe_secret_key =
@@ -2534,8 +2468,7 @@ where
 ///     &input_plaintext_list,
 ///     glwe_noise_distribution,
 ///     glwe_noise_distribution,
-///     &mut secret_generator,
-///     &mut encryption_generator,
+///     encryption_generator.noise_generator_mut(),
 /// );
 ///
 /// let mut output_plaintext_list = input_plaintext_list.clone();
@@ -2567,7 +2500,6 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
     KeyCont,
     InputCont,
     OutputCont,
-    SecretGen,
     EncryptionGen,
 >(
     lwe_compact_public_key: &LweCompactPublicKey<KeyCont>,
@@ -2575,8 +2507,7 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
     encoded: &PlaintextList<InputCont>,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
 ) where
     Scalar: Encryptable<MaskDistribution, NoiseDistribution> + RandomGenerable<UniformBinary>,
     MaskDistribution: Distribution,
@@ -2584,7 +2515,6 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
     KeyCont: Container<Element = Scalar>,
     InputCont: Container<Element = Scalar>,
     OutputCont: ContainerMut<Element = Scalar>,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ByteRandomGenerator,
 {
     let _ = encrypt_lwe_compact_ciphertext_list_with_compact_public_key_impl(
@@ -2593,8 +2523,7 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
         encoded,
         mask_noise_distribution,
         body_noise_distribution,
-        secret_generator,
-        encryption_generator,
+        noise_generator,
     );
 }
 
@@ -2616,6 +2545,7 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 /// ```rust
 /// use tfhe::core_crypto::commons::math::random::RandomGenerator;
 /// use tfhe::core_crypto::prelude::*;
+/// use tfhe::zk::ZkMSBZeroPaddingBitCount;
 ///
 /// // DISCLAIMER: these toy example parameters are not guaranteed to be secure or yield correct
 /// // computations
@@ -2624,25 +2554,32 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 /// let lwe_ciphertext_count = LweCiphertextCount(4);
 /// let glwe_noise_distribution = TUniform::new(9);
 /// let ciphertext_modulus = CiphertextModulus::new_native();
-/// let delta_log = 60;
+/// let delta_log = 59;
 /// let delta = 1u64 << delta_log;
-/// let plaintext_modulus = 1u64 << (64 - delta_log);
+/// let msb_zero_padding_bit_count = ZkMSBZeroPaddingBitCount(1);
+/// let plaintext_modulus = 1u64 << (64 - delta_log - msb_zero_padding_bit_count.0);
+/// // We need the padding bit in the plaintext modulus for the ZK
+/// let zk_plaintext_modulus = plaintext_modulus << msb_zero_padding_bit_count.0;
+///
+/// // We can add custom metadata that will be required for verification, allowing to tie the proof
+/// // to some arbitrary data.
+/// let metadata = [b'T', b'F', b'H', b'E', b'-', b'r', b's'];
 ///
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
-/// let mut random_generator = RandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
+/// let mut random_generator = RandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// let crs = CompactPkeCrs::new(
 ///     lwe_dimension,
-///     lwe_ciphertext_count.0,
+///     lwe_ciphertext_count,
 ///     glwe_noise_distribution,
 ///     ciphertext_modulus,
-///     plaintext_modulus,
+///     zk_plaintext_modulus,
+///     msb_zero_padding_bit_count,
 ///     &mut random_generator,
 /// )
 /// .unwrap();
@@ -2675,10 +2612,10 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 ///     delta,
 ///     glwe_noise_distribution,
 ///     glwe_noise_distribution,
-///     &mut secret_generator,
-///     &mut encryption_generator,
+///     encryption_generator.noise_generator_mut(),
 ///     &mut random_generator,
-///     crs.public_params(),
+///     &crs,
+///     &metadata,
 ///     ZkComputeLoad::Proof,
 /// )
 /// .unwrap();
@@ -2688,7 +2625,8 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 ///     &output_compact_ct_list,
 ///     &lwe_compact_public_key,
 ///     &proof,
-///     crs.public_params(),
+///     &crs,
+///     &metadata,
 /// )
 /// .is_valid());
 ///
@@ -2703,13 +2641,15 @@ pub fn encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 ///     &mut output_plaintext_list,
 /// );
 ///
-/// let signed_decomposer =
-///     SignedDecomposer::new(DecompositionBaseLog(4), DecompositionLevelCount(1));
+/// let signed_decomposer = SignedDecomposer::new(
+///     DecompositionBaseLog((64 - delta_log) as usize),
+///     DecompositionLevelCount(1),
+/// );
 ///
 /// // Round the plaintexts
 /// output_plaintext_list
 ///     .iter_mut()
-///     .for_each(|x| *x.0 = signed_decomposer.closest_representable(*x.0) >> 60);
+///     .for_each(|x| *x.0 = signed_decomposer.closest_representable(*x.0) >> delta_log);
 ///
 /// // Check we recovered the original messages
 /// assert_eq!(&cleartexts, output_plaintext_list.as_ref());
@@ -2723,7 +2663,6 @@ pub fn encrypt_and_prove_lwe_compact_ciphertext_list_with_compact_public_key<
     OutputCont,
     MaskDistribution,
     NoiseDistribution,
-    SecretGen,
     EncryptionGen,
     G,
 >(
@@ -2733,10 +2672,10 @@ pub fn encrypt_and_prove_lwe_compact_ciphertext_list_with_compact_public_key<
     delta: Scalar,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
     random_generator: &mut RandomGenerator<G>,
-    public_params: &CompactPkePublicParams,
+    crs: &CompactPkeCrs,
+    metadata: &[u8],
     load: ZkComputeLoad,
 ) -> crate::Result<CompactPkeProof>
 where
@@ -2751,7 +2690,6 @@ where
     KeyCont: Container<Element = Scalar>,
     InputCont: Container<Element = Scalar>,
     OutputCont: ContainerMut<Element = Scalar>,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ByteRandomGenerator,
     G: ByteRandomGenerator,
 {
@@ -2762,7 +2700,7 @@ where
         delta,
         mask_noise_distribution,
         body_noise_distribution,
-        public_params,
+        crs,
     )?;
 
     let encoded = PlaintextList::from_container(
@@ -2784,65 +2722,17 @@ where
         &encoded,
         mask_noise_distribution,
         body_noise_distribution,
-        secret_generator,
-        encryption_generator,
+        noise_generator,
     );
 
-    let (c1, c2) = output.get_mask_and_body_list();
-
-    let (public_commit, private_commit) = commit(
-        lwe_compact_public_key
-            .get_mask()
-            .as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        lwe_compact_public_key
-            .get_body()
-            .as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        c1.as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        c2.as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        binary_random_vector
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        mask_noise
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        messages
-            .as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        body_noise
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        public_params,
-        random_generator,
-    );
-
-    Ok(prove(
-        (public_params, &public_commit),
-        &private_commit,
+    Ok(crs.prove(
+        lwe_compact_public_key,
+        messages,
+        output,
+        &binary_random_vector,
+        &mask_noise,
+        &body_noise,
+        metadata,
         load,
         random_generator,
     ))
@@ -2855,7 +2745,6 @@ fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key_impl<
     OutputCont,
     MaskDistribution,
     NoiseDistribution,
-    SecretGen,
     EncryptionGen,
 >(
     lwe_compact_public_key: &LweCompactPublicKey<KeyCont>,
@@ -2863,8 +2752,7 @@ fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key_impl<
     encoded: &PlaintextList<InputCont>,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
 ) -> CompactPublicKeyRandomVectors<Scalar>
 where
     Scalar: Encryptable<MaskDistribution, NoiseDistribution> + RandomGenerable<UniformBinary>,
@@ -2873,7 +2761,6 @@ where
     OutputCont: ContainerMut<Element = Scalar>,
     MaskDistribution: Distribution,
     NoiseDistribution: Distribution,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ByteRandomGenerator,
 {
     assert!(
@@ -2909,14 +2796,14 @@ where
     let (mut output_mask_list, mut output_body_list) = output.get_mut_mask_and_body_list();
 
     let mut binary_random_vector = vec![Scalar::ZERO; output_mask_list.lwe_mask_list_size()];
-    secret_generator.fill_slice_with_random_uniform_binary(&mut binary_random_vector);
+    noise_generator.fill_slice_with_random_uniform_binary_bits(&mut binary_random_vector);
 
     let mut mask_noise = vec![Scalar::ZERO; output_mask_list.lwe_mask_list_size()];
-    encryption_generator
+    noise_generator
         .fill_slice_with_random_noise_from_distribution(&mut mask_noise, mask_noise_distribution);
 
     let mut body_noise = vec![Scalar::ZERO; encoded.plaintext_count().0];
-    encryption_generator
+    noise_generator
         .fill_slice_with_random_noise_from_distribution(&mut body_noise, body_noise_distribution);
 
     let max_ciphertext_per_bin = lwe_compact_public_key.lwe_dimension().0;
@@ -3011,12 +2898,11 @@ where
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
 ///
-/// // Create the LweSecretKey
+/// // create the LweSecretKey
 /// let lwe_secret_key =
 ///     allocate_and_generate_new_binary_lwe_secret_key(lwe_dimension, &mut secret_generator);
 ///
@@ -3049,8 +2935,7 @@ where
 ///     &input_plaintext_list,
 ///     glwe_noise_distribution,
 ///     glwe_noise_distribution,
-///     &mut secret_generator,
-///     &mut encryption_generator,
+///     encryption_generator.noise_generator_mut(),
 /// );
 ///
 /// let mut output_plaintext_list = input_plaintext_list.clone();
@@ -3082,7 +2967,6 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
     KeyCont,
     InputCont,
     OutputCont,
-    SecretGen,
     EncryptionGen,
 >(
     lwe_compact_public_key: &LweCompactPublicKey<KeyCont>,
@@ -3090,8 +2974,7 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
     encoded: &PlaintextList<InputCont>,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
 ) where
     Scalar: Encryptable<MaskDistribution, NoiseDistribution>
         + RandomGenerable<UniformBinary>
@@ -3102,7 +2985,6 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
     KeyCont: Container<Element = Scalar>,
     InputCont: Container<Element = Scalar>,
     OutputCont: ContainerMut<Element = Scalar>,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ParallelByteRandomGenerator,
 {
     let _ = par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key_impl(
@@ -3111,8 +2993,7 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
         encoded,
         mask_noise_distribution,
         body_noise_distribution,
-        secret_generator,
-        encryption_generator,
+        noise_generator,
     );
 }
 
@@ -3135,7 +3016,7 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 /// ```rust
 /// use tfhe::core_crypto::commons::math::random::RandomGenerator;
 /// use tfhe::core_crypto::prelude::*;
-/// use tfhe::zk::ZkComputeLoad;
+/// use tfhe::zk::{ZkComputeLoad, ZkMSBZeroPaddingBitCount};
 ///
 /// // DISCLAIMER: these toy example parameters are not guaranteed to be secure or yield correct
 /// // computations
@@ -3144,25 +3025,32 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 /// let lwe_ciphertext_count = LweCiphertextCount(4);
 /// let glwe_noise_distribution = TUniform::new(9);
 /// let ciphertext_modulus = CiphertextModulus::new_native();
-/// let delta_log = 60;
+/// let delta_log = 59;
 /// let delta = 1u64 << delta_log;
-/// let plaintext_modulus = 1u64 << (64 - delta_log);
+/// let msb_zero_padding_bit_count = ZkMSBZeroPaddingBitCount(1);
+/// let plaintext_modulus = 1u64 << (64 - delta_log - msb_zero_padding_bit_count.0);
+/// // We need the padding bit in the plaintext modulus for the ZK
+/// let zk_plaintext_modulus = plaintext_modulus << msb_zero_padding_bit_count.0;
+///
+/// // We can add custom metadata that will be required for verification, allowing to tie the proof
+/// // to some arbitrary data.
+/// let metadata = [b'T', b'F', b'H', b'E', b'-', b'r', b's'];
 ///
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
-/// let mut random_generator = RandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
+/// let mut random_generator = RandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// let crs = CompactPkeCrs::new(
 ///     lwe_dimension,
-///     lwe_ciphertext_count.0,
+///     lwe_ciphertext_count,
 ///     glwe_noise_distribution,
 ///     ciphertext_modulus,
-///     plaintext_modulus,
+///     zk_plaintext_modulus,
+///     msb_zero_padding_bit_count,
 ///     &mut random_generator,
 /// )
 /// .unwrap();
@@ -3195,10 +3083,10 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 ///     delta,
 ///     glwe_noise_distribution,
 ///     glwe_noise_distribution,
-///     &mut secret_generator,
-///     &mut encryption_generator,
+///     encryption_generator.noise_generator_mut(),
 ///     &mut random_generator,
-///     crs.public_params(),
+///     &crs,
+///     &metadata,
 ///     ZkComputeLoad::Proof,
 /// )
 /// .unwrap();
@@ -3208,7 +3096,8 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 ///     &output_compact_ct_list,
 ///     &lwe_compact_public_key,
 ///     &proof,
-///     crs.public_params(),
+///     &crs,
+///     &metadata,
 /// )
 /// .is_valid());
 ///
@@ -3223,13 +3112,15 @@ pub fn par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key<
 ///     &mut output_plaintext_list,
 /// );
 ///
-/// let signed_decomposer =
-///     SignedDecomposer::new(DecompositionBaseLog(4), DecompositionLevelCount(1));
+/// let signed_decomposer = SignedDecomposer::new(
+///     DecompositionBaseLog((64 - delta_log) as usize),
+///     DecompositionLevelCount(1),
+/// );
 ///
 /// // Round the plaintexts
 /// output_plaintext_list
 ///     .iter_mut()
-///     .for_each(|x| *x.0 = signed_decomposer.closest_representable(*x.0) >> 60);
+///     .for_each(|x| *x.0 = signed_decomposer.closest_representable(*x.0) >> delta_log);
 ///
 /// // Check we recovered the original messages
 /// assert_eq!(&cleartexts, output_plaintext_list.as_ref());
@@ -3243,7 +3134,6 @@ pub fn par_encrypt_and_prove_lwe_compact_ciphertext_list_with_compact_public_key
     OutputCont,
     MaskDistribution,
     NoiseDistribution,
-    SecretGen,
     EncryptionGen,
     G,
 >(
@@ -3253,10 +3143,10 @@ pub fn par_encrypt_and_prove_lwe_compact_ciphertext_list_with_compact_public_key
     delta: Scalar,
     mask_noise_distribution: MaskDistribution,
     body_noise_distribution: NoiseDistribution,
-    secret_generator: &mut SecretRandomGenerator<SecretGen>,
-    encryption_generator: &mut EncryptionRandomGenerator<EncryptionGen>,
+    noise_generator: &mut NoiseRandomGenerator<EncryptionGen>,
     random_generator: &mut RandomGenerator<G>,
-    public_params: &CompactPkePublicParams,
+    crs: &CompactPkeCrs,
+    metadata: &[u8],
     load: ZkComputeLoad,
 ) -> crate::Result<CompactPkeProof>
 where
@@ -3271,7 +3161,6 @@ where
     KeyCont: Container<Element = Scalar>,
     InputCont: Container<Element = Scalar>,
     OutputCont: ContainerMut<Element = Scalar>,
-    SecretGen: ByteRandomGenerator,
     EncryptionGen: ByteRandomGenerator,
     G: ByteRandomGenerator,
 {
@@ -3282,7 +3171,7 @@ where
         delta,
         mask_noise_distribution,
         body_noise_distribution,
-        public_params,
+        crs,
     )?;
 
     let encoded = PlaintextList::from_container(
@@ -3298,71 +3187,23 @@ where
         binary_random_vector,
         mask_noise,
         body_noise,
-    } = encrypt_lwe_compact_ciphertext_list_with_compact_public_key_impl(
+    } = par_encrypt_lwe_compact_ciphertext_list_with_compact_public_key_impl(
         lwe_compact_public_key,
         output,
         &encoded,
         mask_noise_distribution,
         body_noise_distribution,
-        secret_generator,
-        encryption_generator,
+        noise_generator,
     );
 
-    let (c1, c2) = output.get_mask_and_body_list();
-
-    let (public_commit, private_commit) = commit(
-        lwe_compact_public_key
-            .get_mask()
-            .as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        lwe_compact_public_key
-            .get_body()
-            .as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        c1.as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        c2.as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        binary_random_vector
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        mask_noise
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        messages
-            .as_ref()
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        body_noise
-            .iter()
-            .copied()
-            .map(CastFrom::cast_from)
-            .collect::<Vec<_>>(),
-        public_params,
-        random_generator,
-    );
-
-    Ok(prove(
-        (public_params, &public_commit),
-        &private_commit,
+    Ok(crs.prove(
+        lwe_compact_public_key,
+        messages,
+        output,
+        &binary_random_vector,
+        &mask_noise,
+        &body_noise,
+        metadata,
         load,
         random_generator,
     ))
@@ -3421,8 +3262,7 @@ mod test {
                 plaintext,
                 glwe_noise_distribution,
                 glwe_noise_distribution,
-                &mut secret_random_generator,
-                &mut encryption_random_generator,
+                encryption_random_generator.noise_generator_mut(),
             );
 
             let decrypted_plaintext = decrypt_lwe_ciphertext(&lwe_sk, &output_ct);
@@ -3467,13 +3307,13 @@ mod test {
 
             let par_lwe_ct_list = {
                 let mut deterministic_seeder =
-                    DeterministicSeeder::<ActivatedRandomGenerator>::new(seed);
+                    DeterministicSeeder::<DefaultRandomGenerator>::new(seed);
                 let mut secret_random_generator =
-                    SecretRandomGenerator::<ActivatedRandomGenerator>::new(
+                    SecretRandomGenerator::<DefaultRandomGenerator>::new(
                         deterministic_seeder.seed(),
                     );
                 let mut encryption_random_generator =
-                    EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+                    EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
                         deterministic_seeder.seed(),
                         &mut deterministic_seeder,
                     );
@@ -3504,8 +3344,7 @@ mod test {
                     &input_plaintext_list,
                     glwe_noise_distribution,
                     glwe_noise_distribution,
-                    &mut secret_random_generator,
-                    &mut encryption_random_generator,
+                    encryption_random_generator.noise_generator_mut(),
                 );
 
                 let mut output_plaintext_list = input_plaintext_list.clone();
@@ -3534,13 +3373,13 @@ mod test {
 
             let ser_lwe_ct_list = {
                 let mut deterministic_seeder =
-                    DeterministicSeeder::<ActivatedRandomGenerator>::new(seed);
+                    DeterministicSeeder::<DefaultRandomGenerator>::new(seed);
                 let mut secret_random_generator =
-                    SecretRandomGenerator::<ActivatedRandomGenerator>::new(
+                    SecretRandomGenerator::<DefaultRandomGenerator>::new(
                         deterministic_seeder.seed(),
                     );
                 let mut encryption_random_generator =
-                    EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+                    EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
                         deterministic_seeder.seed(),
                         &mut deterministic_seeder,
                     );
@@ -3571,8 +3410,7 @@ mod test {
                     &input_plaintext_list,
                     glwe_noise_distribution,
                     glwe_noise_distribution,
-                    &mut secret_random_generator,
-                    &mut encryption_random_generator,
+                    encryption_random_generator.noise_generator_mut(),
                 );
 
                 let mut output_plaintext_list = input_plaintext_list.clone();

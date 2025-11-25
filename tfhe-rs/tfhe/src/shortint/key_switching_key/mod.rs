@@ -1,30 +1,64 @@
 //! This module defines KeySwitchingKey
 //!
-//! - [KeySwitchingKey] allows switching the keys of a ciphertext, from a cleitn key to another.
+//! - [KeySwitchingKey] allows switching the keys of a ciphertext, from a client key to another.
+//!
+//! This process is done in 2 steps:
+//! - First an lwe keyswitch is applied, to convert the inner lwe ciphertext to the new parameters
+//! - Then a pbs is done to update the encoding, if the parameters do not have the same precision.
+//!   This allows to apply a user provided function at the same time.
 
+use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::prelude::{
-    decompress_seeded_lwe_keyswitch_key, keyswitch_lwe_ciphertext, ActivatedRandomGenerator,
-    LweKeyswitchKeyOwned, SeededLweKeyswitchKeyOwned,
+    keyswitch_lwe_ciphertext, CastFrom, CastInto, Cleartext, LweCiphertext, LweCiphertextOwned,
+    LweKeyswitchKeyConformanceParams, LweKeyswitchKeyOwned, SeededLweKeyswitchKeyOwned,
+    UnsignedInteger, UnsignedTorus,
 };
-use crate::shortint::ciphertext::Degree;
+use crate::shortint::atomic_pattern::AtomicPattern;
+use crate::shortint::ciphertext::{unchecked_create_trivial_with_lwe_size, Degree};
+use crate::shortint::client_key::atomic_pattern::EncryptionAtomicPattern;
 use crate::shortint::client_key::secret_encryption_key::SecretEncryptionKeyView;
 use crate::shortint::engine::ShortintEngine;
 use crate::shortint::parameters::{
-    EncryptionKeyChoice, NoiseLevel, PBSOrder, ShortintKeySwitchingParameters,
+    EncryptionKeyChoice, NoiseLevel, ShortintKeySwitchingParameters,
 };
 use crate::shortint::server_key::apply_programmable_bootstrap;
-use crate::shortint::{Ciphertext, ClientKey, CompressedServerKey, ServerKey};
+use crate::shortint::{Ciphertext, ClientKey, CompressedServerKey, MaxNoiseLevel, ServerKey};
 use core::cmp::Ordering;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tfhe_versionable::Versionize;
 
+use super::atomic_pattern::AtomicPatternServerKey;
 use super::backward_compatibility::key_switching_key::{
     CompressedKeySwitchingKeyMaterialVersions, CompressedKeySwitchingKeyVersions,
-    KeySwitchingKeyMaterialVersions, KeySwitchingKeyVersions,
+    KeySwitchingKeyDestinationAtomicPatternVersions, KeySwitchingKeyMaterialVersions,
+    KeySwitchingKeyVersions,
 };
+use super::server_key::{
+    KS32ServerKeyView, ServerKeyView, ShortintBootstrappingKey, StandardServerKeyView,
+};
+use super::AtomicPatternKind;
 
 #[cfg(test)]
 mod test;
+
+/// A metadata stored along the ksk, so that if someday we want to specialize it for each ap, we
+/// will have the information available.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Versionize)]
+#[versionize(KeySwitchingKeyDestinationAtomicPatternVersions)]
+pub enum KeySwitchingKeyDestinationAtomicPattern {
+    Standard,
+    KeySwitch32,
+}
+
+impl From<AtomicPatternKind> for KeySwitchingKeyDestinationAtomicPattern {
+    fn from(value: AtomicPatternKind) -> Self {
+        match value {
+            AtomicPatternKind::Standard(_) => Self::Standard,
+            AtomicPatternKind::KeySwitch32 => Self::KeySwitch32,
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Versionize)]
 #[versionize(KeySwitchingKeyMaterialVersions)]
@@ -32,9 +66,46 @@ pub struct KeySwitchingKeyMaterial {
     pub(crate) key_switching_key: LweKeyswitchKeyOwned<u64>,
     pub(crate) cast_rshift: i8,
     pub(crate) destination_key: EncryptionKeyChoice,
+    pub(crate) destination_atomic_pattern: KeySwitchingKeyDestinationAtomicPattern,
 }
 
 impl KeySwitchingKeyMaterial {
+    pub fn into_raw_parts(
+        self,
+    ) -> (
+        LweKeyswitchKeyOwned<u64>,
+        i8,
+        EncryptionKeyChoice,
+        KeySwitchingKeyDestinationAtomicPattern,
+    ) {
+        let Self {
+            key_switching_key,
+            cast_rshift,
+            destination_key,
+            destination_atomic_pattern,
+        } = self;
+        (
+            key_switching_key,
+            cast_rshift,
+            destination_key,
+            destination_atomic_pattern,
+        )
+    }
+
+    pub fn from_raw_parts(
+        key_switching_key: LweKeyswitchKeyOwned<u64>,
+        cast_rshift: i8,
+        destination_key: EncryptionKeyChoice,
+        destination_atomic_pattern: KeySwitchingKeyDestinationAtomicPattern,
+    ) -> Self {
+        Self {
+            key_switching_key,
+            cast_rshift,
+            destination_key,
+            destination_atomic_pattern,
+        }
+    }
+
     pub fn as_view(&self) -> KeySwitchingKeyMaterialView<'_> {
         KeySwitchingKeyMaterialView {
             key_switching_key: &self.key_switching_key,
@@ -48,7 +119,7 @@ impl KeySwitchingKeyMaterial {
 // It is a bit of a hack, but at this point it seems ok
 pub(crate) struct KeySwitchingKeyBuildHelper<'keys> {
     pub(crate) key_switching_key_material: KeySwitchingKeyMaterial,
-    pub(crate) dest_server_key: &'keys ServerKey,
+    pub(crate) dest_server_key: ServerKeyView<'keys>,
     pub(crate) src_server_key: Option<&'keys ServerKey>,
 }
 
@@ -64,7 +135,7 @@ pub struct KeySwitchingKey {
     pub(crate) src_server_key: Option<ServerKey>,
 }
 
-impl<'keys> From<KeySwitchingKeyBuildHelper<'keys>> for KeySwitchingKey {
+impl From<KeySwitchingKeyBuildHelper<'_>> for KeySwitchingKey {
     fn from(value: KeySwitchingKeyBuildHelper) -> Self {
         let KeySwitchingKeyBuildHelper {
             key_switching_key_material,
@@ -74,8 +145,103 @@ impl<'keys> From<KeySwitchingKeyBuildHelper<'keys>> for KeySwitchingKey {
 
         Self {
             key_switching_key_material,
-            dest_server_key: dest_server_key.to_owned(),
+            dest_server_key: dest_server_key.owned(),
             src_server_key: src_server_key.map(ToOwned::to_owned),
+        }
+    }
+}
+
+/// A ciphertext with information about how the PBS part of the cast should be applied.
+///
+/// Based on the destination key of the keyswitch and the pbs order of the destination server key,
+/// the output of the keyswitch might be a valid shortint ciphertext or an intermediate lwe
+/// ciphertext. In the first case, the encoding change/function application can be done using a
+/// regular `apply_lookup_table` (which does KS+PBS). In the second case, the ciphertext is
+/// already encrypted under the "small" key. Thus we can skip the KS and directly apply a PBS.
+enum CastCiphertext<Scalar: UnsignedInteger> {
+    CorrectKey(Ciphertext),
+    WrongKeyRequiresPBS {
+        ct: LweCiphertextOwned<Scalar>,
+        degree: Degree,
+    },
+}
+
+impl CastCiphertext<u64> {
+    /// Manage the destination key adjustment for the standard ap
+    fn get_cast_type_standard(
+        keyswitched: Ciphertext,
+        dest_server_key: StandardServerKeyView<'_>,
+        keyswitch_destination_key: EncryptionKeyChoice,
+    ) -> Self {
+        match (
+            keyswitch_destination_key,
+            EncryptionKeyChoice::from(dest_server_key.atomic_pattern.kind().pbs_order()),
+        ) {
+            (EncryptionKeyChoice::Big, EncryptionKeyChoice::Small) => {
+                // Big to Small => keyswitch
+                let mut correct_key_ct = dest_server_key.create_trivial(0);
+                correct_key_ct.degree = keyswitched.degree;
+
+                let wrong_key_ct = keyswitched;
+                correct_key_ct.set_noise_level(wrong_key_ct.noise_level(), MaxNoiseLevel::UNKNOWN);
+
+                keyswitch_lwe_ciphertext(
+                    &dest_server_key.atomic_pattern.key_switching_key,
+                    &wrong_key_ct.ct,
+                    &mut correct_key_ct.ct,
+                );
+
+                Self::CorrectKey(correct_key_ct)
+            }
+            (EncryptionKeyChoice::Small, EncryptionKeyChoice::Big) => {
+                // Small to Big => PBS, we handle this in the last part of the cast to apply
+                // the refresh and the user functions in similar ways and keep the code easier
+                // to maintain
+                Self::WrongKeyRequiresPBS {
+                    ct: keyswitched.ct,
+                    degree: keyswitched.degree,
+                }
+            }
+            (EncryptionKeyChoice::Big, EncryptionKeyChoice::Big)
+            | (EncryptionKeyChoice::Small, EncryptionKeyChoice::Small) => {
+                Self::CorrectKey(keyswitched)
+            }
+        }
+    }
+}
+
+impl CastCiphertext<u32> {
+    fn get_cast_type_ks32(
+        keyswitched: Ciphertext,
+        dest_server_key: KS32ServerKeyView<'_>,
+        keyswitch_destination_key: EncryptionKeyChoice,
+    ) -> Self {
+        match (
+            keyswitch_destination_key,
+            EncryptionKeyChoice::from(dest_server_key.atomic_pattern.kind().pbs_order()),
+        ) {
+            (EncryptionKeyChoice::Big | EncryptionKeyChoice::Small, EncryptionKeyChoice::Small) => {
+                panic!("KS32 atomic pattern only supports encryption under the big key")
+            }
+            (EncryptionKeyChoice::Big, EncryptionKeyChoice::Big) => Self::CorrectKey(keyswitched),
+            (EncryptionKeyChoice::Small, EncryptionKeyChoice::Big) => {
+                let Ok(keyswitched_modulus) = keyswitched.ct.ciphertext_modulus().try_to() else {
+                    panic!("Ciphertext modulus after keyswitch must be <= 2**32 for the KS32 atomic pattern")
+                };
+
+                let shift = u64::BITS - u32::BITS;
+                let ap_lwe_cont = keyswitched
+                    .ct
+                    .as_ref()
+                    .iter()
+                    .map(|elem| (elem >> shift) as u32)
+                    .collect();
+                let ap_lwe = LweCiphertext::from_container(ap_lwe_cont, keyswitched_modulus);
+                Self::WrongKeyRequiresPBS {
+                    ct: ap_lwe,
+                    degree: keyswitched.degree,
+                }
+            }
         }
     }
 }
@@ -90,7 +256,7 @@ pub struct KeySwitchingKeyMaterialView<'key> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KeySwitchingKeyView<'keys> {
     pub(crate) key_switching_key_material: KeySwitchingKeyMaterialView<'keys>,
-    pub(crate) dest_server_key: &'keys ServerKey,
+    pub(crate) dest_server_key: ServerKeyView<'keys>,
     pub(crate) src_server_key: Option<&'keys ServerKey>,
 }
 
@@ -105,15 +271,17 @@ impl<'keys> KeySwitchingKeyBuildHelper<'keys> {
     {
         let input_secret_key: SecretEncryptionKeyView<'_> = input_key_pair.0.into();
 
+        let output_cks = output_key_pair.0;
+
         // Creation of the key switching key
-        let key_switching_key = ShortintEngine::with_thread_local_mut(|engine| {
-            engine.new_key_switching_key(&input_secret_key, output_key_pair.0, params)
-        });
+        let key_switching_key = output_cks
+            .atomic_pattern
+            .new_keyswitching_key(&input_secret_key, params);
 
         let full_message_modulus_input =
             input_secret_key.carry_modulus.0 * input_secret_key.message_modulus.0;
-        let full_message_modulus_output = output_key_pair.0.parameters.carry_modulus().0
-            * output_key_pair.0.parameters.message_modulus().0;
+        let full_message_modulus_output = output_key_pair.0.parameters().carry_modulus().0
+            * output_key_pair.0.parameters().message_modulus().0;
         assert!(
             full_message_modulus_input.is_power_of_two()
                 && full_message_modulus_output.is_power_of_two(),
@@ -128,6 +296,7 @@ impl<'keys> KeySwitchingKeyBuildHelper<'keys> {
                 without providing a source ServerKey, this is not supported"
             );
         }
+        let dest_server_key = output_key_pair.1.as_view();
 
         let nb_bits_input: i8 = full_message_modulus_input.ilog2().try_into().unwrap();
         let nb_bits_output: i8 = full_message_modulus_output.ilog2().try_into().unwrap();
@@ -138,8 +307,9 @@ impl<'keys> KeySwitchingKeyBuildHelper<'keys> {
                 key_switching_key,
                 cast_rshift: nb_bits_output - nb_bits_input,
                 destination_key: params.destination_key,
+                destination_atomic_pattern: dest_server_key.atomic_pattern.kind().into(),
             },
-            dest_server_key: output_key_pair.1,
+            dest_server_key,
             src_server_key: input_key_pair.1,
         }
     }
@@ -152,21 +322,22 @@ impl KeySwitchingKey {
     /// # Example
     ///
     /// ```rust
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_1_CARRY_1_KS_PBS, PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+    /// use tfhe::shortint::parameters::current_params::{
+    ///     V1_5_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
+    ///     V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+    ///     V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128,
     /// };
-    /// use tfhe::shortint::prelude::*;
     /// use tfhe::shortint::{gen_keys, KeySwitchingKey};
     ///
     /// // Generate the client keys and server keys:
-    /// let (ck1, sk1) = gen_keys(PARAM_MESSAGE_1_CARRY_1_KS_PBS);
-    /// let (ck2, sk2) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let (ck1, sk1) = gen_keys(V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128);
+    /// let (ck2, sk2) = gen_keys(V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// // Generate the server key:
     /// let ksk = KeySwitchingKey::new(
     ///     (&ck1, Some(&sk1)),
     ///     (&ck2, &sk2),
-    ///     PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS,
+    ///     V1_5_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
     /// );
     /// ```
     pub fn new<'input_key, InputEncryptionKey>(
@@ -189,7 +360,7 @@ impl KeySwitchingKey {
 
         KeySwitchingKeyView {
             key_switching_key_material: key_switching_key_material.as_view(),
-            dest_server_key,
+            dest_server_key: dest_server_key.as_view(),
             src_server_key: src_server_key.as_ref(),
         }
     }
@@ -255,10 +426,9 @@ impl KeySwitchingKey {
             ),
         }
 
-        let dst_lwe_dimension = match key_switching_key_material.destination_key {
-            EncryptionKeyChoice::Big => dest_server_key.bootstrapping_key.output_lwe_dimension(),
-            EncryptionKeyChoice::Small => dest_server_key.bootstrapping_key.input_lwe_dimension(),
-        };
+        let dst_lwe_dimension = dest_server_key
+            .atomic_pattern
+            .ciphertext_lwe_dimension_for_key(key_switching_key_material.destination_key);
 
         assert_eq!(
             dst_lwe_dimension,
@@ -298,21 +468,22 @@ impl KeySwitchingKey {
     /// # Example (the following code won't actually run because this function is private)
     ///
     /// ```rust
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_1_CARRY_1_KS_PBS, PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+    /// use tfhe::shortint::parameters::current_params::{
+    ///     V1_5_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
+    ///     V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+    ///     V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128,
     /// };
-    /// use tfhe::shortint::prelude::*;
     /// use tfhe::shortint::{gen_keys, KeySwitchingKey};
     ///
     /// // Generate the client keys and server keys:
-    /// let (ck1, sk1) = gen_keys(PARAM_MESSAGE_1_CARRY_1_KS_PBS);
-    /// let (ck2, sk2) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let (ck1, sk1) = gen_keys(V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128);
+    /// let (ck2, sk2) = gen_keys(V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// // Generate the server key:
     /// let ksk = KeySwitchingKey::new(
     ///     (&ck1, Some(&sk1)),
     ///     (&ck2, &sk2),
-    ///     PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS,
+    ///     V1_5_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
     /// );
     ///
     /// let cleartext = 1;
@@ -333,7 +504,7 @@ impl<'keys> KeySwitchingKeyView<'keys> {
         self,
     ) -> (
         KeySwitchingKeyMaterialView<'keys>,
-        &'keys ServerKey,
+        ServerKeyView<'keys>,
         Option<&'keys ServerKey>,
     ) {
         let Self {
@@ -364,6 +535,8 @@ impl<'keys> KeySwitchingKeyView<'keys> {
         dest_server_key: &'keys ServerKey,
         src_server_key: Option<&'keys ServerKey>,
     ) -> Self {
+        let dest_server_key = dest_server_key.as_view();
+
         match src_server_key {
             Some(src_server_key) => {
                 let src_lwe_dimension = src_server_key.ciphertext_lwe_dimension();
@@ -395,10 +568,9 @@ impl<'keys> KeySwitchingKeyView<'keys> {
             ),
         }
 
-        let dst_lwe_dimension = match key_switching_key_material.destination_key {
-            EncryptionKeyChoice::Big => dest_server_key.bootstrapping_key.output_lwe_dimension(),
-            EncryptionKeyChoice::Small => dest_server_key.bootstrapping_key.input_lwe_dimension(),
-        };
+        let dst_lwe_dimension = dest_server_key
+            .atomic_pattern
+            .ciphertext_lwe_dimension_for_key(key_switching_key_material.destination_key);
 
         assert_eq!(
             dst_lwe_dimension,
@@ -416,13 +588,17 @@ impl<'keys> KeySwitchingKeyView<'keys> {
             key_switching_key_material
                 .key_switching_key
                 .ciphertext_modulus(),
-            dest_server_key.ciphertext_modulus,
+            dest_server_key
+                .atomic_pattern
+                .ciphertext_modulus_for_key(key_switching_key_material.destination_key),
             "Mismatch between the LweKeyswitchKey CiphertextModulus ({:?}) \
             and the destination ServerKey CiphertextModulus ({:?})",
             key_switching_key_material
                 .key_switching_key
                 .ciphertext_modulus(),
-            dest_server_key.ciphertext_modulus,
+            dest_server_key
+                .atomic_pattern
+                .ciphertext_modulus_for_key(key_switching_key_material.destination_key),
         );
 
         Self {
@@ -438,21 +614,22 @@ impl<'keys> KeySwitchingKeyView<'keys> {
     /// # Example (the following code won't actually run because this function is private)
     ///
     /// ```rust
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_1_CARRY_1_KS_PBS, PARAM_MESSAGE_2_CARRY_2_KS_PBS,
+    /// use tfhe::shortint::parameters::current_params::{
+    ///     V1_5_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
+    ///     V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+    ///     V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128,
     /// };
-    /// use tfhe::shortint::prelude::*;
     /// use tfhe::shortint::{gen_keys, KeySwitchingKey};
     ///
     /// // Generate the client keys and server keys:
-    /// let (ck1, sk1) = gen_keys(PARAM_MESSAGE_1_CARRY_1_KS_PBS);
-    /// let (ck2, sk2) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let (ck1, sk1) = gen_keys(V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128);
+    /// let (ck2, sk2) = gen_keys(V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// // Generate the server key:
     /// let ksk = KeySwitchingKey::new(
     ///     (&ck1, Some(&sk1)),
     ///     (&ck2, &sk2),
-    ///     PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS,
+    ///     V1_5_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
     /// );
     ///
     /// let cleartext = 1;
@@ -463,52 +640,52 @@ impl<'keys> KeySwitchingKeyView<'keys> {
     /// assert_eq!(ck2.decrypt(&cipher_2), cleartext);
     /// ```
     pub fn cast(&self, input_ct: &Ciphertext) -> Ciphertext {
-        let output_lwe_size = match self.key_switching_key_material.destination_key {
-            EncryptionKeyChoice::Big => self
-                .dest_server_key
-                .bootstrapping_key
-                .output_lwe_dimension()
-                .to_lwe_size(),
-            EncryptionKeyChoice::Small => self
-                .dest_server_key
-                .bootstrapping_key
-                .input_lwe_dimension()
-                .to_lwe_size(),
-        };
-        let mut keyswitched = self
+        let res = self.cast_and_apply_functions(input_ct, None);
+        assert_eq!(res.len(), 1);
+        res.into_iter().next().unwrap()
+    }
+
+    /// Cast a ciphertext from the source parameter set to the dest parameter set,
+    /// returning a new ciphertext.
+    ///
+    /// If None is provided then an identity function is used and tighter degrees are used where
+    /// applicable.
+    pub fn cast_and_apply_functions(
+        &self,
+        input_ct: &Ciphertext,
+        functions: Option<&[&(dyn Fn(u64) -> u64 + Sync)]>,
+    ) -> Vec<Ciphertext> {
+        let output_lwe_size = self
             .dest_server_key
-            .unchecked_create_trivial_with_lwe_size(0, output_lwe_size);
+            .atomic_pattern
+            .ciphertext_lwe_dimension_for_key(self.key_switching_key_material.destination_key)
+            .to_lwe_size();
+
+        let output_ciphertext_modulus = self
+            .dest_server_key
+            .atomic_pattern
+            .ciphertext_modulus_for_key(self.key_switching_key_material.destination_key);
+
+        let mut keyswitched = unchecked_create_trivial_with_lwe_size(
+            Cleartext(0),
+            output_lwe_size,
+            self.dest_server_key.message_modulus,
+            self.dest_server_key.carry_modulus,
+            self.dest_server_key.atomic_pattern.kind(),
+            output_ciphertext_modulus,
+        );
+
+        // TODO: We are outside the standard AP, if we chain keyswitches, we will refresh, which is
+        // safer for now. We can likely add an additional flag in shortint to indicate if we
+        // want to refresh or not, for now refresh anyways.
+        keyswitched.set_noise_level(NoiseLevel::UNKNOWN, MaxNoiseLevel::UNKNOWN);
 
         let cast_rshift = self.key_switching_key_material.cast_rshift;
 
-        match cast_rshift.cmp(&0) {
-            // Same bit size: only key switch
-            Ordering::Equal => {
-                keyswitch_lwe_ciphertext(
-                    self.key_switching_key_material.key_switching_key,
-                    &input_ct.ct,
-                    &mut keyswitched.ct,
-                );
-                keyswitched.degree = input_ct.degree;
-                // We don't really know where we stand in terms of noise here
-                keyswitched.set_noise_level(NoiseLevel::UNKNOWN);
-            }
-            // Cast to bigger bit length: keyswitch, then right shift
-            Ordering::Greater => {
-                keyswitch_lwe_ciphertext(
-                    self.key_switching_key_material.key_switching_key,
-                    &input_ct.ct,
-                    &mut keyswitched.ct,
-                );
+        // First pre process
+        let tmp_preprocessed: Ciphertext;
 
-                let acc = self
-                    .dest_server_key
-                    .generate_lookup_table(|n| n >> cast_rshift);
-                self.dest_server_key
-                    .apply_lookup_table_assign(&mut keyswitched, &acc);
-                // degree updated by the apply lookup table
-                keyswitched.set_noise_level(NoiseLevel::NOMINAL);
-            }
+        let pre_processed = match cast_rshift.cmp(&0) {
             // Cast to smaller bit length: left shift, then keyswitch
             Ordering::Less => {
                 let src_server_key = self.src_server_key.as_ref().expect(
@@ -517,75 +694,253 @@ impl<'keys> KeySwitchingKeyView<'keys> {
                 );
                 // We want to avoid the padding bit to be dirty, hence the modulus
                 let acc = src_server_key.generate_lookup_table(|n| {
-                    (n << -cast_rshift)
-                        % (input_ct.carry_modulus.0 * input_ct.message_modulus.0) as u64
+                    (n << -cast_rshift) % (input_ct.carry_modulus.0 * input_ct.message_modulus.0)
                 });
-                let shifted_cipher = src_server_key.apply_lookup_table(input_ct, &acc);
+                tmp_preprocessed = src_server_key.apply_lookup_table(input_ct, &acc);
+                &tmp_preprocessed
+            }
+            // No pre-processing
+            Ordering::Equal | Ordering::Greater => input_ct,
+        };
 
-                keyswitch_lwe_ciphertext(
-                    self.key_switching_key_material.key_switching_key,
-                    &shifted_cipher.ct,
-                    &mut keyswitched.ct,
+        // The keyswitch
+        keyswitch_lwe_ciphertext(
+            self.key_switching_key_material.key_switching_key,
+            &pre_processed.ct,
+            &mut keyswitched.ct,
+        );
+        keyswitched.degree = pre_processed.degree;
+
+        match self.dest_server_key.atomic_pattern {
+            AtomicPatternServerKey::Standard(std_ap) => {
+                // Ok to unwrap because we statically know that the key is for the correct ap
+                let std_key = StandardServerKeyView::try_from(self.dest_server_key).unwrap();
+
+                let cast_type = CastCiphertext::get_cast_type_standard(
+                    keyswitched,
+                    std_key,
+                    self.key_switching_key_material.destination_key,
                 );
-                // The degree is high in the source plaintext modulus, but smaller in the arriving
-                // one.
-                //
-                // src 4 bits:
-                // 0 | XX | 11
-                // shifted:
-                // 0 | 11 | 00 -> Applied lut will have max degree 1100 = 12
-                // dst 2 bits :
-                // 0 | 11 -> 11 = 3
-                keyswitched.degree = Degree::new(shifted_cipher.degree.get() >> -cast_rshift);
-                // We don't really know where we stand in terms of noise here
-                keyswitched.set_noise_level(NoiseLevel::UNKNOWN);
+
+                self.apply_cast_pbs_after_keyswitch(
+                    cast_rshift,
+                    cast_type,
+                    functions,
+                    &std_ap.bootstrapping_key,
+                )
+            }
+            AtomicPatternServerKey::KeySwitch32(ks32_ap) => {
+                // Ok to unwrap because we statically know that the key is for the correct ap
+                let ks32_key = KS32ServerKeyView::try_from(self.dest_server_key).unwrap();
+
+                let cast_type = CastCiphertext::get_cast_type_ks32(
+                    keyswitched,
+                    ks32_key,
+                    self.key_switching_key_material.destination_key,
+                );
+
+                self.apply_cast_pbs_after_keyswitch(
+                    cast_rshift,
+                    cast_type,
+                    functions,
+                    &ks32_ap.bootstrapping_key,
+                )
+            }
+            AtomicPatternServerKey::Dynamic(_) => {
+                panic!("Dynamic atomic pattern does not support key switching")
+            }
+        }
+    }
+
+    /// Apply the pbs part of the keyswitch cast, to shift the encoding as needed and produce a
+    /// valid shortint Ciphertext.
+    ///
+    /// Depending on the input CastCiphertext variant, this might do a
+    /// complete `apply_lookup_table` or just run the PBS part.
+    fn apply_cast_pbs_after_keyswitch<KeySwitchedScalar>(
+        &self,
+        cast_rshift: i8,
+        ct_to_cast: CastCiphertext<KeySwitchedScalar>,
+        functions: Option<&[&(dyn Fn(u64) -> u64 + Sync)]>,
+        compute_bsk: &ShortintBootstrappingKey<KeySwitchedScalar>,
+    ) -> Vec<Ciphertext>
+    where
+        KeySwitchedScalar: UnsignedTorus + CastInto<usize> + CastFrom<usize>,
+    {
+        let output_ciphertext_count = functions.map_or_else(|| 1, |x| x.len());
+
+        let identity_fn_array: &[&(dyn Fn(u64) -> u64 + Sync)] = &[&|x: u64| x];
+        let functions_to_use = functions.map_or_else(|| identity_fn_array, |fns| fns);
+        let using_user_provided_functions = functions.is_some();
+        let using_identity_lut = !using_user_provided_functions;
+        let mut output_cts = vec![self.dest_server_key.create_trivial(0); output_ciphertext_count];
+
+        match cast_rshift.cmp(&0) {
+            // Same bit size
+            Ordering::Equal => {
+                // Refresh or apply user functions if provided
+                match ct_to_cast {
+                    CastCiphertext::CorrectKey(ciphertext) => {
+                        output_cts
+                            .par_iter_mut()
+                            .zip(functions_to_use.par_iter())
+                            .for_each(|(correct_key_ct, function)| {
+                                let acc = self.dest_server_key.generate_lookup_table(function);
+                                *correct_key_ct =
+                                    self.dest_server_key.apply_lookup_table(&ciphertext, &acc);
+                                // If we apply an Identity LUT we know a tighter bound than the
+                                // worst case LUT value
+                                if using_identity_lut {
+                                    correct_key_ct.degree = ciphertext.degree;
+                                }
+                            });
+                    }
+                    CastCiphertext::WrongKeyRequiresPBS {
+                        ct: wrong_key_ct,
+                        degree: degree_after_keyswitch,
+                    } => {
+                        output_cts
+                            .par_iter_mut()
+                            .zip(functions_to_use.par_iter())
+                            .for_each(|(correct_key_ct, function)| {
+                                ShortintEngine::with_thread_local_mut(|engine| {
+                                    let buffers = engine.get_computation_buffers();
+                                    let acc = self.dest_server_key.generate_lookup_table(function);
+                                    apply_programmable_bootstrap(
+                                        compute_bsk,
+                                        &wrong_key_ct,
+                                        &mut correct_key_ct.ct,
+                                        &acc.acc,
+                                        buffers,
+                                    );
+
+                                    // Update degree depending on the LUT used (as this is a PBS and
+                                    // not a full apply lookup table)
+                                    if using_user_provided_functions {
+                                        correct_key_ct.degree = acc.degree;
+                                    } else {
+                                        correct_key_ct.degree = degree_after_keyswitch;
+                                    }
+                                    // Update the noise as well
+                                    correct_key_ct.set_noise_level_to_nominal();
+                                });
+                            });
+                    }
+                }
+            }
+            // Cast to bigger bit length: keyswitch, then right shift, combine this with user
+            // function for better efficiency
+            Ordering::Greater => {
+                match ct_to_cast {
+                    CastCiphertext::CorrectKey(ciphertext) => {
+                        output_cts
+                            .par_iter_mut()
+                            .zip(functions_to_use.par_iter())
+                            .for_each(|(correct_key_ct, function)| {
+                                let acc = self
+                                    .dest_server_key
+                                    .generate_lookup_table(|n| function(n >> cast_rshift));
+                                *correct_key_ct =
+                                    self.dest_server_key.apply_lookup_table(&ciphertext, &acc);
+                                // degree and noise are updated by the apply lookup table
+                            });
+                    }
+                    CastCiphertext::WrongKeyRequiresPBS {
+                        ct: wrong_key_ct,
+                        degree: _,
+                    } => {
+                        output_cts
+                            .par_iter_mut()
+                            .zip(functions_to_use.par_iter())
+                            .for_each(|(correct_key_ct, function)| {
+                                ShortintEngine::with_thread_local_mut(|engine| {
+                                    let buffers = engine.get_computation_buffers();
+                                    let acc = self.dest_server_key.generate_lookup_table(|n| {
+                                        // Call the function on the shifted arrival
+                                        // value
+                                        function(n >> cast_rshift)
+                                    });
+                                    apply_programmable_bootstrap(
+                                        compute_bsk,
+                                        &wrong_key_ct,
+                                        &mut correct_key_ct.ct,
+                                        &acc.acc,
+                                        buffers,
+                                    );
+                                    // Update degree and noise as it's a raw PBS
+                                    correct_key_ct.degree = acc.degree;
+                                    correct_key_ct.set_noise_level_to_nominal();
+                                });
+                            });
+                    }
+                }
+            }
+            // Cast to smaller bit length: left shift, then keyswitch, then refresh or apply user
+            // function.
+            Ordering::Less => {
+                match ct_to_cast {
+                    CastCiphertext::CorrectKey(ciphertext) => {
+                        output_cts
+                            .par_iter_mut()
+                            .zip(functions_to_use.par_iter())
+                            .for_each(|(correct_key_ct, function)| {
+                                let acc = self.dest_server_key.generate_lookup_table(function);
+                                *correct_key_ct =
+                                    self.dest_server_key.apply_lookup_table(&ciphertext, &acc);
+
+                                if using_user_provided_functions {
+                                    correct_key_ct.degree = acc.degree;
+                                } else {
+                                    // The degree is high in the source plaintext modulus, but
+                                    // smaller in the arriving one.
+                                    //
+                                    // src 4 bits:
+                                    // 0 | XX | 11
+                                    // shifted:
+                                    // 0 | 11 | 00 -> Applied lut will have max degree 1100 = 12
+                                    // dst 2 bits :
+                                    // 0 | 11 -> 11 = 3
+                                    let new_degree =
+                                        Degree::new(ciphertext.degree.get() >> -cast_rshift);
+                                    correct_key_ct.degree = new_degree;
+                                }
+                            });
+                    }
+                    CastCiphertext::WrongKeyRequiresPBS {
+                        ct: wrong_key_ct,
+                        degree: degree_after_keyswitch,
+                    } => {
+                        output_cts
+                            .par_iter_mut()
+                            .zip(functions_to_use.par_iter())
+                            .for_each(|(correct_key_ct, function)| {
+                                ShortintEngine::with_thread_local_mut(|engine| {
+                                    let buffers = engine.get_computation_buffers();
+                                    let acc = self.dest_server_key.generate_lookup_table(function);
+                                    apply_programmable_bootstrap(
+                                        compute_bsk,
+                                        &wrong_key_ct,
+                                        &mut correct_key_ct.ct,
+                                        &acc.acc,
+                                        buffers,
+                                    );
+                                    if using_user_provided_functions {
+                                        correct_key_ct.degree = acc.degree;
+                                    } else {
+                                        let new_degree = Degree::new(
+                                            degree_after_keyswitch.get() >> -cast_rshift,
+                                        );
+                                        correct_key_ct.degree = new_degree;
+                                    }
+                                    correct_key_ct.set_noise_level_to_nominal();
+                                });
+                            });
+                    }
+                }
             }
         }
 
-        let ret = {
-            let destination_pbs_order: PBSOrder =
-                self.key_switching_key_material.destination_key.into();
-            if destination_pbs_order == self.dest_server_key.pbs_order {
-                keyswitched
-            } else {
-                let wrong_key_ct = keyswitched;
-                let mut output = self.dest_server_key.create_trivial(0);
-                output.degree = wrong_key_ct.degree;
-                output.set_noise_level(wrong_key_ct.noise_level());
-
-                // We are arriving under the wrong key for the dest_server_key
-                match self.key_switching_key_material.destination_key {
-                    // Big to Small == keyswitch
-                    EncryptionKeyChoice::Big => {
-                        keyswitch_lwe_ciphertext(
-                            &self.dest_server_key.key_switching_key,
-                            &wrong_key_ct.ct,
-                            &mut output.ct,
-                        );
-                        // TODO refresh ?
-                    }
-                    // Small to Big == PBS
-                    EncryptionKeyChoice::Small => {
-                        ShortintEngine::with_thread_local_mut(|engine| {
-                            let acc = self.dest_server_key.generate_lookup_table(|x| x);
-                            let (_, buffers) = engine.get_buffers(self.dest_server_key);
-                            apply_programmable_bootstrap(
-                                &self.dest_server_key.bootstrapping_key,
-                                &wrong_key_ct.ct,
-                                &mut output.ct,
-                                &acc.acc,
-                                buffers,
-                            );
-                        });
-                        output.set_noise_level(NoiseLevel::NOMINAL);
-                    }
-                }
-
-                output
-            }
-        };
-
-        ret
+        output_cts
     }
 }
 
@@ -595,32 +950,59 @@ pub struct CompressedKeySwitchingKeyMaterial {
     pub(crate) key_switching_key: SeededLweKeyswitchKeyOwned<u64>,
     pub(crate) cast_rshift: i8,
     pub(crate) destination_key: EncryptionKeyChoice,
+    pub(crate) destination_atomic_pattern: KeySwitchingKeyDestinationAtomicPattern,
 }
 
 impl CompressedKeySwitchingKeyMaterial {
     pub fn decompress(&self) -> KeySwitchingKeyMaterial {
-        let key_switching_key = {
-            let cksk = &self.key_switching_key;
-            let mut decompressed_ksk = LweKeyswitchKeyOwned::new(
-                0u64,
-                cksk.decomposition_base_log(),
-                cksk.decomposition_level_count(),
-                cksk.input_key_lwe_dimension(),
-                cksk.output_key_lwe_dimension(),
-                cksk.ciphertext_modulus(),
-            );
-            decompress_seeded_lwe_keyswitch_key::<_, _, _, ActivatedRandomGenerator>(
-                &mut decompressed_ksk,
-                cksk,
-            );
-            decompressed_ksk
-        };
+        let key_switching_key = self
+            .key_switching_key
+            .as_view()
+            .par_decompress_into_lwe_keyswitch_key();
 
         KeySwitchingKeyMaterial {
             key_switching_key,
             cast_rshift: self.cast_rshift,
             destination_key: self.destination_key,
+            destination_atomic_pattern: self.destination_atomic_pattern,
         }
+    }
+
+    pub fn from_raw_parts(
+        key_switching_key: SeededLweKeyswitchKeyOwned<u64>,
+        cast_rshift: i8,
+        destination_key: EncryptionKeyChoice,
+        destination_atomic_pattern: KeySwitchingKeyDestinationAtomicPattern,
+    ) -> Self {
+        Self {
+            key_switching_key,
+            cast_rshift,
+            destination_key,
+            destination_atomic_pattern,
+        }
+    }
+
+    pub fn into_raw_parts(
+        self,
+    ) -> (
+        SeededLweKeyswitchKeyOwned<u64>,
+        i8,
+        EncryptionKeyChoice,
+        KeySwitchingKeyDestinationAtomicPattern,
+    ) {
+        let Self {
+            key_switching_key,
+            cast_rshift,
+            destination_key,
+            destination_atomic_pattern,
+        } = self;
+
+        (
+            key_switching_key,
+            cast_rshift,
+            destination_key,
+            destination_atomic_pattern,
+        )
     }
 }
 
@@ -644,7 +1026,7 @@ pub struct CompressedKeySwitchingKey {
     pub(crate) src_server_key: Option<CompressedServerKey>,
 }
 
-impl<'keys> From<CompressedKeySwitchingKeyBuildHelper<'keys>> for CompressedKeySwitchingKey {
+impl From<CompressedKeySwitchingKeyBuildHelper<'_>> for CompressedKeySwitchingKey {
     fn from(value: CompressedKeySwitchingKeyBuildHelper) -> Self {
         let CompressedKeySwitchingKeyBuildHelper {
             key_switching_key_material,
@@ -671,15 +1053,17 @@ impl<'keys> CompressedKeySwitchingKeyBuildHelper<'keys> {
     {
         let input_secret_key: SecretEncryptionKeyView<'_> = input_key_pair.0.into();
 
+        let output_cks = output_key_pair.0;
+
         // Creation of the key switching key
-        let key_switching_key = ShortintEngine::with_thread_local_mut(|engine| {
-            engine.new_seeded_key_switching_key(&input_secret_key, output_key_pair.0, params)
-        });
+        let key_switching_key = output_cks
+            .atomic_pattern
+            .new_seeded_keyswitching_key(&input_secret_key, params);
 
         let full_message_modulus_input =
             input_secret_key.carry_modulus.0 * input_secret_key.message_modulus.0;
-        let full_message_modulus_output = output_key_pair.0.parameters.carry_modulus().0
-            * output_key_pair.0.parameters.message_modulus().0;
+        let full_message_modulus_output = output_key_pair.0.parameters().carry_modulus().0
+            * output_key_pair.0.parameters().message_modulus().0;
         assert!(
             full_message_modulus_input.is_power_of_two()
                 && full_message_modulus_output.is_power_of_two(),
@@ -704,6 +1088,7 @@ impl<'keys> CompressedKeySwitchingKeyBuildHelper<'keys> {
                 key_switching_key,
                 cast_rshift: nb_bits_output - nb_bits_input,
                 destination_key: params.destination_key,
+                destination_atomic_pattern: output_cks.atomic_pattern.kind().into(),
             },
             dest_server_key: output_key_pair.1,
             src_server_key: input_key_pair.1,
@@ -788,10 +1173,12 @@ impl CompressedKeySwitchingKey {
                 );
 
                 assert_eq!(
-                    src_server_key.ciphertext_modulus, dest_server_key.ciphertext_modulus,
+                    src_server_key.ciphertext_modulus(),
+                    dest_server_key.ciphertext_modulus(),
                     "Mismatch between the source CompressedServerKey CiphertextModulus ({:?}) \
                     and the destination CompressedServerKey CiphertextModulus ({:?})",
-                    src_server_key.ciphertext_modulus, dest_server_key.ciphertext_modulus,
+                    src_server_key.ciphertext_modulus(),
+                    dest_server_key.ciphertext_modulus(),
                 );
             }
             None => assert!(
@@ -801,9 +1188,16 @@ impl CompressedKeySwitchingKey {
             ),
         }
 
+        let std_dest_server_key = dest_server_key
+            .as_compressed_standard_atomic_pattern_server_key()
+            .expect(
+                "Trying to build a shortint::CompressedKeySwitchingKey \
+            with an unsupported atomic pattern",
+            );
+        let dest_bootstrapping_key = std_dest_server_key.bootstrapping_key();
         let dst_lwe_dimension = match key_switching_key_material.destination_key {
-            EncryptionKeyChoice::Big => dest_server_key.bootstrapping_key.output_lwe_dimension(),
-            EncryptionKeyChoice::Small => dest_server_key.bootstrapping_key.input_lwe_dimension(),
+            EncryptionKeyChoice::Big => dest_bootstrapping_key.output_lwe_dimension(),
+            EncryptionKeyChoice::Small => dest_bootstrapping_key.input_lwe_dimension(),
         };
 
         assert_eq!(
@@ -822,13 +1216,13 @@ impl CompressedKeySwitchingKey {
             key_switching_key_material
                 .key_switching_key
                 .ciphertext_modulus(),
-            dest_server_key.ciphertext_modulus,
+            dest_server_key.ciphertext_modulus(),
             "Mismatch between the SeededLweKeyswitchKey CiphertextModulus ({:?}) \
             and the destination CompressedServerKey CiphertextModulus ({:?})",
             key_switching_key_material
                 .key_switching_key
                 .ciphertext_modulus(),
-            dest_server_key.ciphertext_modulus,
+            dest_server_key.ciphertext_modulus(),
         );
 
         Self {
@@ -836,5 +1230,48 @@ impl CompressedKeySwitchingKey {
             dest_server_key,
             src_server_key,
         }
+    }
+}
+
+pub struct KeySwitchingKeyConformanceParams {
+    pub keyswitch_key_conformance_params: LweKeyswitchKeyConformanceParams<u64>,
+    pub cast_rshift: i8,
+    pub destination_key: EncryptionKeyChoice,
+    pub destination_atomic_pattern: KeySwitchingKeyDestinationAtomicPattern,
+}
+
+impl ParameterSetConformant for KeySwitchingKeyMaterial {
+    type ParameterSet = KeySwitchingKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self {
+            key_switching_key,
+            cast_rshift,
+            destination_key,
+            destination_atomic_pattern,
+        } = self;
+
+        key_switching_key.is_conformant(&parameter_set.keyswitch_key_conformance_params)
+            && *cast_rshift == parameter_set.cast_rshift
+            && *destination_key == parameter_set.destination_key
+            && *destination_atomic_pattern == parameter_set.destination_atomic_pattern
+    }
+}
+
+impl ParameterSetConformant for CompressedKeySwitchingKeyMaterial {
+    type ParameterSet = KeySwitchingKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self {
+            key_switching_key,
+            cast_rshift,
+            destination_key,
+            destination_atomic_pattern,
+        } = self;
+
+        key_switching_key.is_conformant(&parameter_set.keyswitch_key_conformance_params)
+            && *cast_rshift == parameter_set.cast_rshift
+            && *destination_key == parameter_set.destination_key
+            && *destination_atomic_pattern == parameter_set.destination_atomic_pattern
     }
 }

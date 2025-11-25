@@ -5,11 +5,11 @@ use super::standard::Ciphertext;
 use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::commons::traits::ContiguousEntityContainer;
 use crate::core_crypto::entities::*;
+use crate::shortint::atomic_pattern::AtomicPattern;
 use crate::shortint::backward_compatibility::ciphertext::CompactCiphertextListVersions;
-use crate::shortint::parameters::compact_public_key_only::CompactCiphertextListCastingMode;
 pub use crate::shortint::parameters::ShortintCompactCiphertextListCastingMode;
 use crate::shortint::parameters::{
-    CarryModulus, CompactCiphertextListExpansionKind, MessageModulus,
+    AtomicPatternKind, CarryModulus, CompactCiphertextListExpansionKind, MessageModulus,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -24,7 +24,6 @@ pub struct CompactCiphertextList {
     pub message_modulus: MessageModulus,
     pub carry_modulus: CarryModulus,
     pub expansion_kind: CompactCiphertextListExpansionKind,
-    pub noise_level: NoiseLevel,
 }
 
 impl ParameterSetConformant for CompactCiphertextList {
@@ -37,26 +36,33 @@ impl ParameterSetConformant for CompactCiphertextList {
             message_modulus,
             carry_modulus,
             expansion_kind,
-            noise_level,
         } = self;
+
         let CiphertextListConformanceParams {
             ct_list_params,
             message_modulus: param_message_modulus,
             carry_modulus: param_carry_modulus,
             degree: param_degree,
-            noise_level: param_noise_level,
             expansion_kind: param_expansion_kind,
         } = param;
+
         ct_list.is_conformant(ct_list_params)
             && *message_modulus == *param_message_modulus
             && *carry_modulus == *param_carry_modulus
             && *expansion_kind == *param_expansion_kind
             && *degree == *param_degree
-            && *noise_level == *param_noise_level
     }
 }
 
 impl CompactCiphertextList {
+    /// Expand a [`CompactCiphertextList`] to a `Vec` of [`Ciphertext`].
+    ///
+    /// The function takes a [`ShortintCompactCiphertextListCastingMode`] to indicate whether a
+    /// keyswitch should be applied during expansion, and if it does, functions can be applied as
+    /// well during casting, which can be more efficient if a refresh is required during casting.
+    ///
+    /// This is useful when using separate parameters for the public key used to encrypt the
+    /// [`CompactCiphertextList`] allowing to keyswitch to the computation params during expansion.
     pub fn expand(
         &self,
         casting_mode: ShortintCompactCiphertextListCastingMode<'_>,
@@ -85,7 +91,7 @@ impl CompactCiphertextList {
         match (self.expansion_kind, casting_mode) {
             (
                 CompactCiphertextListExpansionKind::RequiresCasting,
-                CompactCiphertextListCastingMode::NoCasting,
+                ShortintCompactCiphertextListCastingMode::NoCasting,
             ) => Err(crate::Error::new(String::from(
                 "Cannot expand a CompactCiphertextList that requires casting without casting, \
                     please provide a shortint::KeySwitchingKey passing it with the enum variant \
@@ -93,27 +99,47 @@ impl CompactCiphertextList {
             ))),
             (
                 CompactCiphertextListExpansionKind::RequiresCasting,
-                CompactCiphertextListCastingMode::CastIfNecessary(casting_key),
+                ShortintCompactCiphertextListCastingMode::CastIfNecessary {
+                    casting_key,
+                    functions,
+                },
             ) => {
-                let pbs_order = casting_key.dest_server_key.pbs_order;
+                let functions = match functions {
+                    Some(functions) => {
+                        if functions.len() != output_lwe_ciphertext_list.lwe_ciphertext_count().0 {
+                            return Err(crate::Error::new(format!(
+                            "Cannot expand a CompactCiphertextList: got {} functions for casting, \
+                            expected {}",
+                            functions.len(),
+                            output_lwe_ciphertext_list.lwe_ciphertext_count().0
+                        )));
+                        }
+                        functions
+                    }
+                    None => &vec![None; output_lwe_ciphertext_list.lwe_ciphertext_count().0],
+                };
+
+                let atomic_pattern = casting_key.dest_server_key.atomic_pattern.kind();
 
                 let res = output_lwe_ciphertext_list
                     .par_iter()
-                    .map(|lwe_view| {
+                    .zip(functions.par_iter())
+                    .flat_map(|(lwe_view, functions)| {
                         let lwe_to_cast = LweCiphertext::from_container(
                             lwe_view.as_ref().to_vec(),
                             self.ct_list.ciphertext_modulus(),
                         );
-                        let shortint_ct_to_cast = Ciphertext {
-                            ct: lwe_to_cast,
-                            degree: self.degree,
-                            message_modulus: self.message_modulus,
-                            carry_modulus: self.carry_modulus,
-                            pbs_order,
-                            noise_level: self.noise_level,
-                        };
+                        let shortint_ct_to_cast = Ciphertext::new(
+                            lwe_to_cast,
+                            self.degree,
+                            NoiseLevel::UNKNOWN,
+                            self.message_modulus,
+                            self.carry_modulus,
+                            atomic_pattern,
+                        );
 
-                        casting_key.cast(&shortint_ct_to_cast)
+                        casting_key
+                            .cast_and_apply_functions(&shortint_ct_to_cast, functions.as_deref())
                     })
                     .collect::<Vec<_>>();
                 Ok(res)
@@ -126,14 +152,16 @@ impl CompactCiphertextList {
                             lwe_view.as_ref().to_vec(),
                             self.ct_list.ciphertext_modulus(),
                         );
-                        Ciphertext {
+                        let atomic_pattern = AtomicPatternKind::Standard(pbs_order);
+
+                        Ciphertext::new(
                             ct,
-                            degree: self.degree,
-                            message_modulus: self.message_modulus,
-                            carry_modulus: self.carry_modulus,
-                            pbs_order,
-                            noise_level: self.noise_level,
-                        }
+                            self.degree,
+                            NoiseLevel::NOMINAL,
+                            self.message_modulus,
+                            self.carry_modulus,
+                            atomic_pattern,
+                        )
                     })
                     .collect::<Vec<_>>();
 
@@ -151,7 +179,6 @@ impl CompactCiphertextList {
         MessageModulus,
         CarryModulus,
         CompactCiphertextListExpansionKind,
-        NoiseLevel,
     ) {
         let Self {
             ct_list,
@@ -159,7 +186,6 @@ impl CompactCiphertextList {
             message_modulus,
             carry_modulus,
             expansion_kind,
-            noise_level,
         } = self;
 
         (
@@ -168,7 +194,6 @@ impl CompactCiphertextList {
             message_modulus,
             carry_modulus,
             expansion_kind,
-            noise_level,
         )
     }
 
@@ -179,7 +204,6 @@ impl CompactCiphertextList {
         message_modulus: MessageModulus,
         carry_modulus: CarryModulus,
         expansion_kind: CompactCiphertextListExpansionKind,
-        noise_level: NoiseLevel,
     ) -> Self {
         Self {
             ct_list,
@@ -187,7 +211,6 @@ impl CompactCiphertextList {
             message_modulus,
             carry_modulus,
             expansion_kind,
-            noise_level,
         }
     }
 
@@ -204,5 +227,9 @@ impl CompactCiphertextList {
 
     pub fn size_bytes(&self) -> usize {
         self.ct_list.size_bytes()
+    }
+
+    pub fn is_packed(&self) -> bool {
+        self.degree.get() > self.message_modulus.corresponding_max_degree().get()
     }
 }

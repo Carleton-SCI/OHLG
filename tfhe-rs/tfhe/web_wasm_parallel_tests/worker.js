@@ -2,10 +2,13 @@ import * as Comlink from "comlink";
 import init, {
   initThreadPool,
   init_panic_hook,
+  set_server_key,
+  shortint_params_name,
   ShortintParametersName,
   ShortintParameters,
   TfheClientKey,
   TfhePublicKey,
+  TfheServerKey,
   TfheCompressedPublicKey,
   TfheCompressedServerKey,
   TfheCompressedCompactPublicKey,
@@ -44,7 +47,10 @@ function append_param_name(bench_results, params_name) {
 }
 
 async function compressedPublicKeyTest() {
-  let config = TfheConfigBuilder.default_with_small_encryption().build();
+  let params_name_small =
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_PBS_KS_GAUSSIAN_2M128;
+  let params_small = new ShortintParameters(params_name_small);
+  let config = TfheConfigBuilder.with_custom_parameters(params_small).build();
 
   console.time("ClientKey Gen");
   let clientKey = TfheClientKey.generate(config);
@@ -54,7 +60,7 @@ async function compressedPublicKeyTest() {
   let compressedPublicKey = TfheCompressedPublicKey.new(clientKey);
   console.timeEnd("CompressedPublicKey Gen");
 
-  let data = compressedPublicKey.serialize();
+  let data = compressedPublicKey.safe_serialize(BigInt(10000000));
   console.log("CompressedPublicKey size:", data.length);
 
   console.time("CompressedPublicKey Decompression");
@@ -65,7 +71,7 @@ async function compressedPublicKeyTest() {
   let encrypted = FheUint8.encrypt_with_public_key(255, publicKey);
   console.timeEnd("FheUint8 encrypt with CompressedPublicKey");
 
-  let ser = encrypted.serialize();
+  let ser = encrypted.safe_serialize(BigInt(10000000));
   console.log("Ciphertext Size", ser.length);
 
   let decrypted = encrypted.decrypt(clientKey);
@@ -73,7 +79,10 @@ async function compressedPublicKeyTest() {
 }
 
 async function publicKeyTest() {
-  let config = TfheConfigBuilder.default_with_small_encryption().build();
+  let params_name_small =
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_PBS_KS_GAUSSIAN_2M128;
+  let params_small = new ShortintParameters(params_name_small);
+  let config = TfheConfigBuilder.with_custom_parameters(params_small).build();
 
   console.time("ClientKey Gen");
   let clientKey = TfheClientKey.generate(config);
@@ -87,7 +96,7 @@ async function publicKeyTest() {
   let encrypted = FheUint8.encrypt_with_public_key(255, publicKey);
   console.timeEnd("FheUint8 encrypt with PublicKey");
 
-  let ser = encrypted.serialize();
+  let ser = encrypted.safe_serialize(BigInt(10000000));
   console.log("Ciphertext Size", ser.length);
 
   let decrypted = encrypted.decrypt(clientKey);
@@ -134,13 +143,13 @@ async function compactPublicKeyBench32BitOnConfig(config) {
   console.log("CompactFheUint32List Encrypt bench: ", timing_2, " ms");
   bench_results["compact_fheunit32_list_encrypt_mean"] = timing_2;
 
-  let serialized_list = compact_list.serialize();
+  let serialized_list = compact_list.safe_serialize(BigInt(10000000));
   console.log("Serialized CompactFheUint32List size: ", serialized_list.length);
 
   // Bench the serialization for bench_loops iterations
   start = performance.now();
   for (let i = 0; i < bench_loops; i++) {
-    let _ = compact_list.serialize();
+    let _ = compact_list.safe_serialize(BigInt(10000000));
   }
   end = performance.now();
   const timing_3 = (end - start) / bench_loops;
@@ -151,28 +160,28 @@ async function compactPublicKeyBench32BitOnConfig(config) {
 }
 
 async function compactPublicKeyBench32BitBig() {
-  const block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_KS_PBS,
-  );
+  const params =
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_KS_PBS_GAUSSIAN_2M128;
+  const block_params = new ShortintParameters(params);
   let config = TfheConfigBuilder.default()
     .use_custom_parameters(block_params)
     .build();
   return append_param_name(
     await compactPublicKeyBench32BitOnConfig(config),
-    "PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_KS_PBS",
+    shortint_params_name(params),
   );
 }
 
 async function compactPublicKeyBench32BitSmall() {
-  const block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_PBS_KS,
-  );
+  const params =
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_PBS_KS_GAUSSIAN_2M128;
+  const block_params = new ShortintParameters(params);
   let config = TfheConfigBuilder.default()
     .use_custom_parameters(block_params)
     .build();
   return append_param_name(
     await compactPublicKeyBench32BitOnConfig(config),
-    "PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_PBS_KS",
+    shortint_params_name(params),
   );
 }
 
@@ -194,7 +203,7 @@ async function compressedCompactPublicKeyTest256BitOnConfig(config) {
   let publicKey = TfheCompressedCompactPublicKey.new(clientKey);
   console.timeEnd("CompressedCompactPublicKey Gen");
 
-  let serialized_pk = publicKey.serialize();
+  let serialized_pk = publicKey.safe_serialize(BigInt(10000000));
   console.log(
     "Serialized CompressedCompactPublicKey size: ",
     serialized_pk.length,
@@ -242,10 +251,10 @@ async function compressedCompactPublicKeyTest256BitOnConfig(config) {
 
 async function compactPublicKeyWithCastingTest256Bit() {
   let block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64,
+    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
   );
   let casting_params = new ShortintCompactPublicKeyEncryptionParameters(
-    ShortintCompactPublicKeyEncryptionParametersName.SHORTINT_PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64,
+    ShortintCompactPublicKeyEncryptionParametersName.PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
   );
 
   let config = TfheConfigBuilder.default()
@@ -254,7 +263,10 @@ async function compactPublicKeyWithCastingTest256Bit() {
     .build();
 
   let clientKey = TfheClientKey.generate(config);
+  let serverKey = TfheServerKey.new(clientKey);
   let publicKey = TfheCompactPublicKey.new(clientKey);
+
+  set_server_key(serverKey);
 
   let clear_u2 = 3;
   let clear_i32 = -3284;
@@ -271,7 +283,7 @@ async function compactPublicKeyWithCastingTest256Bit() {
   console.log("Numb bits in compact list: ", num_bits_encrypted);
 
   console.time("CompactCiphertextList Encrypt");
-  let list = builder.build();
+  let list = builder.build_packed();
   console.timeEnd("CompactCiphertextList Encrypt");
 
   let serialized = list.safe_serialize(BigInt(10000000));
@@ -281,15 +293,23 @@ async function compactPublicKeyWithCastingTest256Bit() {
     BigInt(10000000),
   );
 
-  // Cannot expand
+  let expander = deserialized.expand();
+
+  assert_eq(expander.get_uint2(0).decrypt(clientKey), clear_u2);
+
+  assert_eq(expander.get_int32(1).decrypt(clientKey), clear_i32);
+
+  assert_eq(expander.get_bool(2).decrypt(clientKey), clear_bool);
+
+  assert_eq(expander.get_uint256(3).decrypt(clientKey), clear_u256);
 }
 
 async function compressedCompactPublicKeyWithCastingTest256Bit() {
   let block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64,
+    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
   );
   let casting_params = new ShortintCompactPublicKeyEncryptionParameters(
-    ShortintCompactPublicKeyEncryptionParametersName.SHORTINT_PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64,
+    ShortintCompactPublicKeyEncryptionParametersName.PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
   );
 
   let config = TfheConfigBuilder.default()
@@ -298,8 +318,11 @@ async function compressedCompactPublicKeyWithCastingTest256Bit() {
     .build();
 
   let clientKey = TfheClientKey.generate(config);
+  let serverKey = TfheServerKey.new(clientKey);
   let compressedPublicKey = TfheCompressedCompactPublicKey.new(clientKey);
   let publicKey = compressedPublicKey.decompress();
+
+  set_server_key(serverKey);
 
   let clear_u2 = 3;
   let clear_i32 = -3284;
@@ -316,7 +339,7 @@ async function compressedCompactPublicKeyWithCastingTest256Bit() {
   console.log("Numb bits in compact list: ", num_bits_encrypted);
 
   console.time("CompactCiphertextList Encrypt");
-  let list = builder.build();
+  let list = builder.build_packed();
   console.timeEnd("CompactCiphertextList Encrypt");
 
   let serialized = list.safe_serialize(BigInt(10000000));
@@ -326,15 +349,23 @@ async function compressedCompactPublicKeyWithCastingTest256Bit() {
     BigInt(10000000),
   );
 
-  // Cannot expand
+  let expander = deserialized.expand();
+
+  assert_eq(expander.get_uint2(0).decrypt(clientKey), clear_u2);
+
+  assert_eq(expander.get_int32(1).decrypt(clientKey), clear_i32);
+
+  assert_eq(expander.get_bool(2).decrypt(clientKey), clear_bool);
+
+  assert_eq(expander.get_uint256(3).decrypt(clientKey), clear_u256);
 }
 
-async function compactPublicKeyZeroKnowledge() {
+async function compactPublicKeyZeroKnowledgeTest() {
   let block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64,
+    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
   );
   let casting_params = new ShortintCompactPublicKeyEncryptionParameters(
-    ShortintCompactPublicKeyEncryptionParametersName.SHORTINT_PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64,
+    ShortintCompactPublicKeyEncryptionParametersName.PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
   );
 
   let config = TfheConfigBuilder.default()
@@ -343,13 +374,26 @@ async function compactPublicKeyZeroKnowledge() {
     .build();
 
   let clientKey = TfheClientKey.generate(config);
+  let serverKey = TfheServerKey.new(clientKey);
   let publicKey = TfheCompactPublicKey.new(clientKey);
+
+  set_server_key(serverKey);
 
   console.log("Start CRS generation");
   console.time("CRS generation");
   let crs = CompactPkeCrs.from_config(config, 4 * 64);
   console.timeEnd("CRS generation");
-  let public_params = crs.public_params();
+
+  let serialized = crs.safe_serialize(BigInt(1000000000));
+  console.log("CompactPkeCrs size:", serialized.length);
+  let deserialized = CompactPkeCrs.safe_deserialize(
+    serialized,
+    BigInt(1000000000),
+  );
+
+  // 320 bits is a use case we have, 8 bits per byte
+  const metadata = new Uint8Array(320 / 8);
+  crypto.getRandomValues(metadata);
 
   {
     let input = generateRandomBigInt(64);
@@ -358,7 +402,8 @@ async function compactPublicKeyZeroKnowledge() {
     let builder = CompactCiphertextList.builder(publicKey);
     builder.push_u64(input);
     let list = builder.build_with_proof_packed(
-      public_params,
+      crs,
+      metadata,
       ZkComputeLoad.Proof,
     );
     let end = performance.now();
@@ -368,10 +413,20 @@ async function compactPublicKeyZeroKnowledge() {
       " ms",
     );
 
-    let bytes = list.serialize();
-    console.log("CompactCiphertextList size:", bytes.length);
+    let serialized = list.safe_serialize(BigInt(10000000));
+    console.log("CompactCiphertextList size:", serialized.length);
+    let deserialized = ProvenCompactCiphertextList.safe_deserialize(
+      serialized,
+      BigInt(10000000),
+    );
 
-    // We cannot expand a packed list in WASM
+    let expander = deserialized.verify_and_expand(crs, publicKey, metadata);
+
+    assert_eq(expander.get_uint64(0).decrypt(clientKey), input);
+
+    let unverified_expander = deserialized.expand_without_verification();
+
+    assert_eq(unverified_expander.get_uint64(0).decrypt(clientKey), input);
   }
 
   {
@@ -387,7 +442,8 @@ async function compactPublicKeyZeroKnowledge() {
       builder.push_u64(input);
     }
     let encrypted = builder.build_with_proof_packed(
-      public_params,
+      crs,
+      metadata,
       ZkComputeLoad.Proof,
     );
     let end = performance.now();
@@ -397,13 +453,31 @@ async function compactPublicKeyZeroKnowledge() {
       " ms",
     );
 
-    // We cannot expand a packed list in WASM
+    let expander = encrypted.verify_and_expand(crs, publicKey, metadata);
+
+    assert_eq(expander.get_uint64(0).decrypt(clientKey), inputs[0]);
+
+    assert_eq(expander.get_uint64(1).decrypt(clientKey), inputs[1]);
+
+    assert_eq(expander.get_uint64(2).decrypt(clientKey), inputs[2]);
+
+    assert_eq(expander.get_uint64(3).decrypt(clientKey), inputs[3]);
+
+    let unverified_expander = encrypted.expand_without_verification();
+
+    assert_eq(unverified_expander.get_uint64(0).decrypt(clientKey), inputs[0]);
+
+    assert_eq(unverified_expander.get_uint64(1).decrypt(clientKey), inputs[1]);
+
+    assert_eq(unverified_expander.get_uint64(2).decrypt(clientKey), inputs[2]);
+
+    assert_eq(unverified_expander.get_uint64(3).decrypt(clientKey), inputs[3]);
   }
 }
 
 async function compressedCompactPublicKeyTest256BitBig() {
   const block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_KS_PBS,
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_KS_PBS_GAUSSIAN_2M128,
   );
   let config = TfheConfigBuilder.default()
     .use_custom_parameters(block_params)
@@ -413,7 +487,7 @@ async function compressedCompactPublicKeyTest256BitBig() {
 
 async function compressedCompactPublicKeyTest256BitSmall() {
   const block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_PBS_KS,
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_PBS_KS_GAUSSIAN_2M128,
   );
   let config = TfheConfigBuilder.default()
     .use_custom_parameters(block_params)
@@ -463,7 +537,7 @@ async function compactPublicKeyBench256BitOnConfig(config) {
   console.log("CompactFheUint256List Encrypt bench: ", timing_2, " ms");
   bench_results["compact_fheunit256_list_encrypt_mean"] = timing_2;
 
-  let serialized_list = compact_list.serialize();
+  let serialized_list = compact_list.safe_serialize(BigInt(10000000));
   console.log(
     "Serialized CompactFheUint256List size: ",
     serialized_list.length,
@@ -472,7 +546,7 @@ async function compactPublicKeyBench256BitOnConfig(config) {
   // Bench the serialization for bench_loops iterations
   start = performance.now();
   for (let i = 0; i < bench_loops; i++) {
-    let _ = compact_list.serialize();
+    let _ = compact_list.safe_serialize(BigInt(10000000));
   }
   end = performance.now();
   const timing_3 = (end - start) / bench_loops;
@@ -483,33 +557,33 @@ async function compactPublicKeyBench256BitOnConfig(config) {
 }
 
 async function compactPublicKeyBench256BitBig() {
-  const block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_KS_PBS,
-  );
+  const params =
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_KS_PBS_GAUSSIAN_2M128;
+  const block_params = new ShortintParameters(params);
   let config = TfheConfigBuilder.default()
     .use_custom_parameters(block_params)
     .build();
   return append_param_name(
     await compactPublicKeyBench256BitOnConfig(config),
-    "PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_KS_PBS",
+    shortint_params_name(params),
   );
 }
 
 async function compactPublicKeyBench256BitSmall() {
-  const block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_PBS_KS,
-  );
+  const params =
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_PBS_KS_GAUSSIAN_2M128;
+  const block_params = new ShortintParameters(params);
   let config = TfheConfigBuilder.default()
     .use_custom_parameters(block_params)
     .build();
   return append_param_name(
     await compactPublicKeyBench256BitOnConfig(config),
-    "PARAM_MESSAGE_2_CARRY_2_COMPACT_PK_PBS_KS",
+    shortint_params_name(params),
   );
 }
 
 async function compressedServerKeyBenchConfig(config) {
-  const bench_loops = 35;
+  const bench_loops = 5;
   let bench_results = {};
 
   console.log("Begin benchmarks"); // DEBUG
@@ -526,13 +600,13 @@ async function compressedServerKeyBenchConfig(config) {
   bench_results["compressed_server_key_gen_mean"] = timing_1;
 
   let serverKey = TfheCompressedServerKey.new(clientKey);
-  let serialized_key = serverKey.serialize();
+  let serialized_key = serverKey.safe_serialize(BigInt(1000000000));
   console.log("Serialized ServerKey size: ", serialized_key.length);
 
   // Bench the serialization for bench_loops iterations
   start = performance.now();
   for (let i = 0; i < bench_loops; i++) {
-    let _ = serverKey.serialize();
+    let _ = serverKey.safe_serialize(BigInt(1000000000));
   }
   end = performance.now();
   const timing_2 = (end - start) / bench_loops;
@@ -543,40 +617,55 @@ async function compressedServerKeyBenchConfig(config) {
 }
 
 async function compressedServerKeyBenchMessage1Carry1() {
-  const block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_1_CARRY_1_KS_PBS,
-  );
+  const params =
+    ShortintParametersName.V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128;
+  const block_params = new ShortintParameters(params);
   let config = TfheConfigBuilder.default()
     .use_custom_parameters(block_params)
     .build();
   return append_param_name(
     await compressedServerKeyBenchConfig(config),
-    "PARAM_MESSAGE_1_CARRY_1_KS_PBS",
+    shortint_params_name(params),
   );
 }
 
 async function compressedServerKeyBenchMessage2Carry2() {
-  const block_params = new ShortintParameters(
-    ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-  );
+  const params =
+    ShortintParametersName.V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
+  const block_params = new ShortintParameters(params);
   let config = TfheConfigBuilder.default()
     .use_custom_parameters(block_params)
     .build();
   return append_param_name(
     await compressedServerKeyBenchConfig(config),
-    "PARAM_MESSAGE_2_CARRY_2_KS_PBS",
+    shortint_params_name(params),
   );
 }
 
 async function compactPublicKeyZeroKnowledgeBench() {
   let params_to_bench = [
     {
-      name: "PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64",
+      zk_scheme: "ZKV2",
+      name: shortint_params_name(
+        ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+      ),
       block_params: new ShortintParameters(
-        ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64,
+        ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
       ),
       casting_params: new ShortintCompactPublicKeyEncryptionParameters(
-        ShortintCompactPublicKeyEncryptionParametersName.SHORTINT_PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64,
+        ShortintCompactPublicKeyEncryptionParametersName.PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+      ),
+    },
+    {
+      zk_scheme: "ZKV1",
+      name: shortint_params_name(
+        ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+      ),
+      block_params: new ShortintParameters(
+        ShortintParametersName.PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+      ),
+      casting_params: new ShortintCompactPublicKeyEncryptionParameters(
+        ShortintCompactPublicKeyEncryptionParametersName.V1_5_PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128_ZKV1,
       ),
     },
   ];
@@ -603,52 +692,70 @@ async function compactPublicKeyZeroKnowledgeBench() {
       [ZkComputeLoad.Verify]: "compute_load_verify",
     };
 
-    let bits_to_encrypt = [640, 1280, 4096];
+    // Proof configuration:
+    let proof_configs = [
+      { crs_bit_size: 64, bits_to_encrypt: [64] },
+      { crs_bit_size: 640, bits_to_encrypt: [640] },
+      { crs_bit_size: 2048, bits_to_encrypt: [2048, 64 * 4] }, // 64 * 4 is a production use-case
+      { crs_bit_size: 4096, bits_to_encrypt: [4096] },
+    ];
 
-    let encrypt_counts = bits_to_encrypt.map((v) => v / 64);
-
-    for (const encrypt_count of encrypt_counts) {
+    for (const proof_config of proof_configs) {
       console.log("Start CRS generation");
       console.time("CRS generation");
-      let crs = CompactPkeCrs.from_config(config, encrypt_count * 64);
+      let crs = CompactPkeCrs.from_config(config, proof_config["crs_bit_size"]);
       console.timeEnd("CRS generation");
 
-      let public_params = crs.public_params();
-      let inputs = Array.from(Array(encrypt_count).keys()).map((_) => U64_MAX);
-      for (const loadChoice of load_choices) {
-        let serialized_size = 0;
-        let timing = 0;
-        for (let i = 0; i < bench_loops; i++) {
-          console.time("Loop " + i);
-          let compact_list_builder =
-            ProvenCompactCiphertextList.builder(publicKey);
-          for (let j = 0; j < encrypt_count; j++) {
-            compact_list_builder.push_u64(inputs[j]);
-          }
-          const start = performance.now();
-          let list = compact_list_builder.build_with_proof_packed(
-            public_params,
-            loadChoice,
-          );
-          const end = performance.now();
-          console.timeEnd("Loop " + i);
-          timing += end - start;
-          serialized_size = list.serialize().length;
-        }
-        const mean = timing / bench_loops;
-        const common_bench_str =
-          "compact_fhe_uint_proven_encryption_" +
-          encrypt_count * 64 +
-          "_bits_packed_" +
-          load_to_str[loadChoice];
-        const bench_str_1 = common_bench_str + "_mean_" + block_params_name;
-        console.log(bench_str_1, ": ", mean, " ms");
-        const bench_str_2 =
-          common_bench_str + "_serialized_size_mean_" + block_params_name;
-        console.log(bench_str_2, ": ", serialized_size, " bytes");
+      // 320 bits is a use case we have, 8 bits per byte
+      const metadata = new Uint8Array(320 / 8);
+      crypto.getRandomValues(metadata);
 
-        bench_results[bench_str_1] = mean;
-        bench_results[bench_str_2] = serialized_size;
+      for (const bits_to_encrypt of proof_config["bits_to_encrypt"]) {
+        let encrypt_count = bits_to_encrypt / 64;
+
+        let inputs = Array.from(Array(encrypt_count).keys()).map(
+          (_) => U64_MAX,
+        );
+        for (const loadChoice of load_choices) {
+          let serialized_size = 0;
+          let timing = 0;
+          for (let i = 0; i < bench_loops; i++) {
+            console.time("Loop " + i);
+            let compact_list_builder =
+              ProvenCompactCiphertextList.builder(publicKey);
+            for (let j = 0; j < encrypt_count; j++) {
+              compact_list_builder.push_u64(inputs[j]);
+            }
+            const start = performance.now();
+            let list = compact_list_builder.build_with_proof_packed(
+              crs,
+              metadata,
+              loadChoice,
+            );
+            const end = performance.now();
+            console.timeEnd("Loop " + i);
+            timing += end - start;
+            serialized_size = list.safe_serialize(BigInt(10000000)).length;
+          }
+          const mean = timing / bench_loops;
+          const common_bench_str =
+            "compact_fhe_uint_proven_encryption_" +
+            params.zk_scheme +
+            "_" +
+            bits_to_encrypt +
+            "_bits_packed_" +
+            proof_config["crs_bit_size"] +
+            "_bits_crs_" +
+            load_to_str[loadChoice];
+          const bench_str_1 = common_bench_str + "_mean_" + block_params_name;
+          console.log(bench_str_1, ": ", mean, " ms");
+          const bench_str_2 =
+            common_bench_str + "_serialized_size_mean_" + block_params_name;
+          console.log(bench_str_2, ": ", serialized_size, " bytes");
+
+          bench_results[bench_str_1] = mean;
+          bench_results[bench_str_2] = serialized_size;
+        }
       }
     }
   }
@@ -666,7 +773,7 @@ async function main() {
     compressedPublicKeyTest,
     compressedCompactPublicKeyTest256BitSmall,
     compressedCompactPublicKeyTest256BitBig,
-    compactPublicKeyZeroKnowledge,
+    compactPublicKeyZeroKnowledgeTest,
     compactPublicKeyBench32BitBig,
     compactPublicKeyBench32BitSmall,
     compactPublicKeyBench256BitBig,

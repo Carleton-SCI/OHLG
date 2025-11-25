@@ -1,12 +1,14 @@
 use crate::core_crypto::entities::{LweCiphertextList, LweCiphertextOwned};
 use crate::core_crypto::gpu::lwe_ciphertext_list::CudaLweCiphertextList;
-use crate::core_crypto::gpu::vec::CudaVec;
+use crate::core_crypto::gpu::vec::{CudaVec, GpuIndex};
 use crate::core_crypto::gpu::CudaStreams;
 use crate::core_crypto::prelude::{CiphertextModulus, LweSize};
 use crate::integer::gpu::ciphertext::info::{CudaBlockInfo, CudaRadixCiphertextInfo};
 use crate::integer::gpu::ciphertext::{CudaRadixCiphertext, CudaUnsignedRadixCiphertext};
 use crate::integer::BooleanBlock;
 use crate::shortint::Ciphertext;
+
+use super::CudaIntegerRadixCiphertext;
 
 /// Wrapper type used to signal that the inner value encrypts 0 or 1
 ///
@@ -69,7 +71,7 @@ impl CudaBooleanBlock {
             degree: boolean_block.0.degree,
             message_modulus: boolean_block.0.message_modulus,
             carry_modulus: boolean_block.0.carry_modulus,
-            pbs_order: boolean_block.0.pbs_order,
+            atomic_pattern: boolean_block.0.atomic_pattern,
             noise_level: boolean_block.0.noise_level(),
         };
         let radix_info = vec![info; 1];
@@ -94,7 +96,7 @@ impl CudaBooleanBlock {
             degree: boolean_block.0.degree,
             message_modulus: boolean_block.0.message_modulus,
             carry_modulus: boolean_block.0.carry_modulus,
-            pbs_order: boolean_block.0.pbs_order,
+            atomic_pattern: boolean_block.0.atomic_pattern,
             noise_level: boolean_block.0.noise_level(),
         };
         let radix_info = vec![info; 1];
@@ -102,26 +104,29 @@ impl CudaBooleanBlock {
     }
 
     /// ```rust
+    /// use tfhe::core_crypto::gpu::vec::GpuIndex;
     /// use tfhe::core_crypto::gpu::CudaStreams;
     /// use tfhe::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock;
-    /// use tfhe::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext;
     /// use tfhe::integer::gpu::gen_keys_radix_gpu;
-    /// use tfhe::integer::BooleanBlock;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
     ///
     /// let gpu_index = 0;
-    /// let mut stream = CudaStreams::new_single_gpu(gpu_index);
+    /// let stream = CudaStreams::new_single_gpu(GpuIndex::new(gpu_index));
     ///
     /// // Generate the client key and the server key:
     /// let num_blocks = 1;
-    /// let (cks, sks) = gen_keys_radix_gpu(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks, &mut stream);
+    /// let (cks, sks) = gen_keys_radix_gpu(
+    ///     PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+    ///     num_blocks,
+    ///     &stream,
+    /// );
     ///
     /// let msg1 = true;
     /// let ct1 = cks.encrypt_bool(msg1);
     ///
     /// // Copy to GPU
-    /// let d_ct1 = CudaBooleanBlock::from_boolean_block(&ct1, &mut stream);
-    /// let ct2 = d_ct1.to_boolean_block(&mut stream);
+    /// let d_ct1 = CudaBooleanBlock::from_boolean_block(&ct1, &stream);
+    /// let ct2 = d_ct1.to_boolean_block(&stream);
     /// let res = cks.decrypt_bool(&ct2);
     ///
     /// assert_eq!(msg1, res);
@@ -130,17 +135,17 @@ impl CudaBooleanBlock {
         let h_lwe_ciphertext_list = self.0.ciphertext.d_blocks.to_lwe_ciphertext_list(streams);
         let ciphertext_modulus = h_lwe_ciphertext_list.ciphertext_modulus();
 
-        let block = Ciphertext {
-            ct: LweCiphertextOwned::from_container(
+        let block = Ciphertext::new(
+            LweCiphertextOwned::from_container(
                 h_lwe_ciphertext_list.into_container(),
                 ciphertext_modulus,
             ),
-            degree: self.0.ciphertext.info.blocks[0].degree,
-            noise_level: self.0.ciphertext.info.blocks[0].noise_level,
-            message_modulus: self.0.ciphertext.info.blocks[0].message_modulus,
-            carry_modulus: self.0.ciphertext.info.blocks[0].carry_modulus,
-            pbs_order: self.0.ciphertext.info.blocks[0].pbs_order,
-        };
+            self.0.ciphertext.info.blocks[0].degree,
+            self.0.ciphertext.info.blocks[0].noise_level,
+            self.0.ciphertext.info.blocks[0].message_modulus,
+            self.0.ciphertext.info.blocks[0].carry_modulus,
+            self.0.ciphertext.info.blocks[0].atomic_pattern,
+        );
 
         BooleanBlock::new_unchecked(block)
     }
@@ -167,10 +172,18 @@ impl CudaBooleanBlock {
         })
     }
 
-    pub(crate) fn duplicate(&self, streams: &CudaStreams) -> Self {
+    pub fn duplicate(&self, streams: &CudaStreams) -> Self {
         let ct = unsafe { self.duplicate_async(streams) };
         streams.synchronize();
         ct
+    }
+
+    pub fn move_to_stream(self, streams: &CudaStreams) -> Self {
+        Self(self.0.move_to_stream(streams))
+    }
+
+    pub fn gpu_indexes(&self) -> &[GpuIndex] {
+        self.0.gpu_indexes()
     }
 }
 

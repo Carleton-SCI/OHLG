@@ -3,6 +3,8 @@ use std::fmt::{Debug, Display, Formatter};
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ErrorKind {
     Message(String),
+    /// The provide range for a slicing operation was invalid
+    InvalidRange(InvalidRangeError),
     /// The zero knowledge proof and the content it is supposed to prove
     /// failed to correctly prove
     #[cfg(feature = "zk-pok")]
@@ -24,6 +26,16 @@ impl Error {
     }
 }
 
+#[cfg(feature = "shortint")]
+macro_rules! error{
+    ($($arg:tt)*) => {
+        $crate::error::Error::new(::std::format!($($arg)*))
+    }
+}
+
+#[cfg(feature = "shortint")]
+pub(crate) use error;
+
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self.kind() {
@@ -34,6 +46,7 @@ impl Display for Error {
             ErrorKind::InvalidZkProof => {
                 write!(f, "The zero knowledge proof and the content it is supposed to prove were not valid")
             }
+            ErrorKind::InvalidRange(err) => write!(f, "Invalid range: {err}"),
         }
     }
 }
@@ -56,6 +69,13 @@ impl From<String> for Error {
     }
 }
 
+impl From<InvalidRangeError> for Error {
+    fn from(value: InvalidRangeError) -> Self {
+        let kind = ErrorKind::InvalidRange(value);
+        Self { kind }
+    }
+}
+
 impl std::error::Error for Error {}
 
 // This is useful to use infallible conversions as well as fallible ones in certain parts of the lib
@@ -65,3 +85,28 @@ impl From<std::convert::Infallible> for Error {
         unreachable!()
     }
 }
+
+/// Error returned when the provided range for a slice is invalid
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum InvalidRangeError {
+    /// The upper bound of the range is greater than the size of the integer
+    SliceTooBig,
+    /// The upper bound is smaller than the lower bound
+    WrongOrder,
+}
+
+impl Display for InvalidRangeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SliceTooBig => write!(
+                f,
+                "The upper bound of the range is greater than the size of the integer"
+            ),
+            Self::WrongOrder => {
+                write!(f, "The upper bound is smaller than the lower bound")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InvalidRangeError {}

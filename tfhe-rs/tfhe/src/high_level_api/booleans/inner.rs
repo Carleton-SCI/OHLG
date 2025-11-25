@@ -1,18 +1,33 @@
 use crate::backward_compatibility::booleans::InnerBooleanVersionedOwned;
+#[cfg(feature = "gpu")]
+use crate::core_crypto::gpu::CudaStreams;
 use crate::high_level_api::details::MaybeCloned;
 use crate::high_level_api::global_state;
 #[cfg(feature = "gpu")]
-use crate::high_level_api::global_state::with_thread_local_cuda_streams;
+use crate::high_level_api::global_state::with_cuda_internal_keys;
+#[cfg(feature = "gpu")]
+use crate::high_level_api::global_state::with_thread_local_cuda_streams_for_gpu_indexes;
 use crate::integer::BooleanBlock;
 use crate::Device;
 use serde::{Deserializer, Serializer};
 use tfhe_versionable::{Unversionize, UnversionizeError, Versionize, VersionizeOwned};
+
+#[cfg(feature = "hpu")]
+use crate::high_level_api::keys::HpuTaggedDevice;
+#[cfg(feature = "gpu")]
+use crate::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock;
+#[cfg(feature = "gpu")]
+use crate::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext;
+#[cfg(feature = "hpu")]
+use crate::integer::hpu::ciphertext::HpuRadixCiphertext;
 
 /// Enum that manages the current inner representation of a boolean.
 pub(in crate::high_level_api) enum InnerBoolean {
     Cpu(BooleanBlock),
     #[cfg(feature = "gpu")]
     Cuda(crate::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock),
+    #[cfg(feature = "hpu")]
+    Hpu(HpuRadixCiphertext),
 }
 
 impl Clone for InnerBoolean {
@@ -21,8 +36,12 @@ impl Clone for InnerBoolean {
             Self::Cpu(inner) => Self::Cpu(inner.clone()),
             #[cfg(feature = "gpu")]
             Self::Cuda(inner) => {
-                with_thread_local_cuda_streams(|streams| Self::Cuda(inner.duplicate(streams)))
+                with_thread_local_cuda_streams_for_gpu_indexes(inner.gpu_indexes(), |streams| {
+                    Self::Cuda(inner.duplicate(streams))
+                })
             }
+            #[cfg(feature = "hpu")]
+            Self::Hpu(inner) => Self::Hpu(inner.clone()),
         }
     }
 }
@@ -35,6 +54,8 @@ impl serde::Serialize for InnerBoolean {
             Self::Cpu(cpu_ct) => cpu_ct.serialize(serializer),
             #[cfg(feature = "gpu")]
             Self::Cuda(_) => self.on_cpu().serialize(serializer),
+            #[cfg(feature = "hpu")]
+            Self::Hpu(_) => self.on_cpu().serialize(serializer),
         }
     }
 }
@@ -52,10 +73,8 @@ impl<'de> serde::Deserialize<'de> for InnerBoolean {
 
 // Only CPU data are serialized so we only versionize the CPU type.
 #[derive(serde::Serialize, serde::Deserialize)]
-#[cfg_attr(tfhe_lints, allow(tfhe_lints::serialize_without_versionize))]
-pub(crate) struct InnerBooleanVersionOwned(
-    <crate::integer::BooleanBlock as VersionizeOwned>::VersionedOwned,
-);
+#[cfg_attr(dylint_lib = "tfhe_lints", allow(serialize_without_versionize))]
+pub(crate) struct InnerBooleanVersionOwned(<BooleanBlock as VersionizeOwned>::VersionedOwned);
 
 impl Versionize for InnerBoolean {
     type Versioned<'vers> = InnerBooleanVersionedOwned;
@@ -81,7 +100,7 @@ impl Unversionize for InnerBoolean {
     fn unversionize(versioned: Self::VersionedOwned) -> Result<Self, UnversionizeError> {
         match versioned {
             InnerBooleanVersionedOwned::V0(v0) => {
-                let mut unversioned = Self::Cpu(crate::integer::BooleanBlock::unversionize(v0.0)?);
+                let mut unversioned = Self::Cpu(BooleanBlock::unversionize(v0.0)?);
                 unversioned.move_to_device_of_server_key_if_set();
                 Ok(unversioned)
             }
@@ -102,12 +121,21 @@ impl From<crate::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock> for 
     }
 }
 
+#[cfg(feature = "hpu")]
+impl From<HpuRadixCiphertext> for InnerBoolean {
+    fn from(value: HpuRadixCiphertext) -> Self {
+        Self::Hpu(value)
+    }
+}
+
 impl InnerBoolean {
     pub(crate) fn current_device(&self) -> Device {
         match self {
             Self::Cpu(_) => Device::Cpu,
             #[cfg(feature = "gpu")]
             Self::Cuda(_) => Device::CudaGpu,
+            #[cfg(feature = "hpu")]
+            Self::Hpu(_) => Device::Hpu,
         }
     }
 
@@ -117,9 +145,13 @@ impl InnerBoolean {
         match self {
             Self::Cpu(ct) => MaybeCloned::Borrowed(ct),
             #[cfg(feature = "gpu")]
-            Self::Cuda(ct) => with_thread_local_cuda_streams(|streams| {
-                MaybeCloned::Cloned(ct.to_boolean_block(streams))
-            }),
+            Self::Cuda(ct) => {
+                with_thread_local_cuda_streams_for_gpu_indexes(ct.gpu_indexes(), |streams| {
+                    MaybeCloned::Cloned(ct.to_boolean_block(streams))
+                })
+            }
+            #[cfg(feature = "hpu")]
+            Self::Hpu(ct) => MaybeCloned::Cloned(ct.to_boolean_block()),
         }
     }
 
@@ -128,26 +160,37 @@ impl InnerBoolean {
     #[cfg(feature = "gpu")]
     pub(crate) fn on_gpu(
         &self,
-    ) -> MaybeCloned<'_, crate::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext> {
-        match self {
-            Self::Cpu(ct) => with_thread_local_cuda_streams(|streams| {
-                let ct_as_radix = crate::integer::RadixCiphertext::from(vec![ct.0.clone()]);
-                let cuda_ct =
-                    crate::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext::from_radix_ciphertext(
-                        &ct_as_radix,
-                        streams,
-                    );
-                MaybeCloned::Cloned(cuda_ct)
-            }),
-            #[cfg(feature = "gpu")]
-            Self::Cuda(ct) => MaybeCloned::Borrowed(ct.as_ref()),
-        }
+        streams: &CudaStreams,
+    ) -> MaybeCloned<'_, CudaUnsignedRadixCiphertext> {
+        let cpu_radix = if let Self::Cuda(gpu_radix) = self {
+            if gpu_radix.gpu_indexes() == streams.gpu_indexes() {
+                return MaybeCloned::Borrowed(&gpu_radix.0);
+            }
+            return MaybeCloned::Cloned(gpu_radix.duplicate(streams).0);
+        } else {
+            self.on_cpu()
+        };
+
+        let gpu_radix = CudaBooleanBlock::from_boolean_block(&cpu_radix, streams);
+        MaybeCloned::Cloned(gpu_radix.0)
+    }
+
+    #[cfg(feature = "hpu")]
+    pub(crate) fn on_hpu(&self, device: &HpuTaggedDevice) -> MaybeCloned<'_, HpuRadixCiphertext> {
+        let cpu_radix = if let Self::Hpu(hpu_radix) = self {
+            return MaybeCloned::Borrowed(hpu_radix);
+        } else {
+            self.on_cpu()
+        };
+
+        let hpu_ct = HpuRadixCiphertext::from_boolean_ciphertext(&cpu_radix, &device.device);
+        MaybeCloned::Cloned(hpu_ct)
     }
 
     pub(crate) fn as_cpu_mut(&mut self) -> &mut BooleanBlock {
         match self {
             Self::Cpu(block) => block,
-            #[cfg(feature = "gpu")]
+            #[cfg(any(feature = "gpu", feature = "hpu"))]
             _ => {
                 self.move_to_device(Device::Cpu);
                 self.as_cpu_mut()
@@ -157,68 +200,96 @@ impl InnerBoolean {
 
     #[cfg(feature = "gpu")]
     #[track_caller]
-    pub(crate) fn as_gpu_mut(
-        &mut self,
-    ) -> &mut crate::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext {
-        if let Self::Cuda(radix_ct) = self {
-            radix_ct.as_mut()
+    pub(crate) fn as_gpu_mut(&mut self, streams: &CudaStreams) -> &mut CudaUnsignedRadixCiphertext {
+        use crate::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock;
+
+        let cpu_radix = if let Self::Cuda(cuda_ct) = self {
+            if cuda_ct.gpu_indexes() != streams.gpu_indexes() {
+                *cuda_ct = cuda_ct.duplicate(streams);
+            }
+            return &mut cuda_ct.0;
         } else {
-            self.move_to_device(Device::CudaGpu);
-            self.as_gpu_mut()
-        }
+            self.on_cpu()
+        };
+
+        let cuda_ct = CudaBooleanBlock::from_boolean_block(&cpu_radix, streams);
+        *self = Self::Cuda(cuda_ct);
+        let Self::Cuda(cuda_ct) = self else {
+            unreachable!()
+        };
+        &mut cuda_ct.0
     }
 
-    /// Returns the inner cpu ciphertext if self is on the CPU, otherwise, returns a copy
-    /// that is on the CPU
+    #[cfg(feature = "gpu")]
     pub(crate) fn into_cpu(self) -> BooleanBlock {
         match self {
-            Self::Cpu(ct) => ct,
+            Self::Cpu(cpu_ct) => cpu_ct,
             #[cfg(feature = "gpu")]
             Self::Cuda(ct) => {
-                with_thread_local_cuda_streams(|streams| ct.to_boolean_block(streams))
+                with_thread_local_cuda_streams_for_gpu_indexes(ct.gpu_indexes(), |streams| {
+                    ct.to_boolean_block(streams)
+                })
             }
+            #[cfg(feature = "hpu")]
+            Self::Hpu(hpu_ct) => hpu_ct.to_boolean_block(),
         }
     }
 
     #[cfg(feature = "gpu")]
-    pub(crate) fn into_gpu(
-        self,
-    ) -> crate::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock {
-        match self {
-            Self::Cpu(cpu_ct) => with_thread_local_cuda_streams(|streams| {
-                crate::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock::from_boolean_block(
-                    &cpu_ct, streams,
-                )
-            }),
-            Self::Cuda(ct) => ct,
-        }
+    pub(crate) fn into_gpu(self, streams: &CudaStreams) -> CudaBooleanBlock {
+        let cpu_bool = if let Self::Cuda(gpu_bool) = self {
+            return gpu_bool.move_to_stream(streams);
+        } else {
+            self.into_cpu()
+        };
+        CudaBooleanBlock::from_boolean_block(&cpu_bool, streams)
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn move_to_device(&mut self, device: Device) {
-        match (&self, device) {
-            (Self::Cpu(_), Device::Cpu) => {
-                // Nothing to do, we already are on the correct device
+    pub(crate) fn move_to_device(&mut self, target_device: Device) {
+        let current_device = self.current_device();
+
+        if current_device == target_device {
+            #[cfg(feature = "gpu")]
+            // We may not be on the correct Cuda device
+            if let Self::Cuda(cuda_ct) = self {
+                with_cuda_internal_keys(|key| {
+                    let streams = &key.streams;
+                    if cuda_ct.gpu_indexes() != streams.gpu_indexes() {
+                        *cuda_ct = cuda_ct.duplicate(streams);
+                    }
+                })
+            }
+            return;
+        }
+
+        // The logic is that the common device is the CPU, all other devices
+        // know how to transfer from and to CPU.
+
+        // So we first transfer to CPU
+        let cpu_ct = self.on_cpu();
+
+        // Then we can transfer the desired device
+        match target_device {
+            Device::Cpu => {
+                let _ = cpu_ct;
             }
             #[cfg(feature = "gpu")]
-            (Self::Cuda(_), Device::CudaGpu) => {
-                // Nothing to do, we already are on the correct device
-            }
-            #[cfg(feature = "gpu")]
-            (Self::Cpu(ct), Device::CudaGpu) => {
-                let new_inner = with_thread_local_cuda_streams(|streams| {
+            Device::CudaGpu => {
+                let new_inner = with_cuda_internal_keys(|key| {
+                    let streams = &key.streams;
                     crate::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock::from_boolean_block(
-                        ct,
-                        streams,
+                        &cpu_ct, streams,
                     )
                 });
                 *self = Self::Cuda(new_inner);
             }
-            #[cfg(feature = "gpu")]
-            (Self::Cuda(ct), Device::Cpu) => {
-                let new_inner =
-                    with_thread_local_cuda_streams(|streams| ct.to_boolean_block(streams));
-                *self = Self::Cpu(new_inner);
+            #[cfg(feature = "hpu")]
+            Device::Hpu => {
+                let hpu_ct = global_state::with_thread_local_hpu_device(|device| {
+                    HpuRadixCiphertext::from_boolean_ciphertext(&cpu_ct, &device.device)
+                });
+                *self = Self::Hpu(hpu_ct);
             }
         }
     }

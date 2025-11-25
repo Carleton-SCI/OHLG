@@ -3,8 +3,10 @@ use super::backward_compatibility::key_switching_key::{
     KeySwitchingKeyMaterialVersions, KeySwitchingKeyVersions,
 };
 use super::{ClientKey, CompressedServerKey, ServerKey};
+use crate::conformance::ParameterSetConformant;
 use crate::integer::client_key::secret_encryption_key::SecretEncryptionKeyView;
 use crate::integer::IntegerCiphertext;
+use crate::shortint::key_switching_key::KeySwitchingKeyConformanceParams;
 use crate::shortint::parameters::ShortintKeySwitchingParameters;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -48,6 +50,17 @@ pub struct KeySwitchingKeyMaterial {
 }
 
 impl KeySwitchingKeyMaterial {
+    pub fn into_raw_parts(self) -> crate::shortint::key_switching_key::KeySwitchingKeyMaterial {
+        let Self { material } = self;
+        material
+    }
+
+    pub fn from_raw_parts(
+        material: crate::shortint::key_switching_key::KeySwitchingKeyMaterial,
+    ) -> Self {
+        Self { material }
+    }
+
     pub fn as_view(&self) -> KeySwitchingKeyMaterialView<'_> {
         KeySwitchingKeyMaterialView {
             material: self.material.as_view(),
@@ -61,7 +74,7 @@ pub struct KeySwitchingKey {
     pub(crate) key: crate::shortint::KeySwitchingKey,
 }
 
-impl<'keys> From<KeySwitchingKeyBuildHelper<'keys>> for KeySwitchingKey {
+impl From<KeySwitchingKeyBuildHelper<'_>> for KeySwitchingKey {
     fn from(value: KeySwitchingKeyBuildHelper) -> Self {
         Self {
             key: value.build_helper.into(),
@@ -69,7 +82,7 @@ impl<'keys> From<KeySwitchingKeyBuildHelper<'keys>> for KeySwitchingKey {
     }
 }
 
-impl<'keys> From<KeySwitchingKeyBuildHelper<'keys>> for KeySwitchingKeyMaterial {
+impl From<KeySwitchingKeyBuildHelper<'_>> for KeySwitchingKeyMaterial {
     fn from(value: KeySwitchingKeyBuildHelper) -> Self {
         Self {
             material: value.build_helper.key_switching_key_material,
@@ -210,6 +223,19 @@ impl CompressedKeySwitchingKeyMaterial {
             material: self.material.decompress(),
         }
     }
+
+    pub fn from_raw_parts(
+        material: crate::shortint::key_switching_key::CompressedKeySwitchingKeyMaterial,
+    ) -> Self {
+        Self { material }
+    }
+
+    pub fn into_raw_parts(
+        self,
+    ) -> crate::shortint::key_switching_key::CompressedKeySwitchingKeyMaterial {
+        let Self { material } = self;
+        material
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Versionize)]
@@ -218,7 +244,7 @@ pub struct CompressedKeySwitchingKey {
     pub(crate) key: crate::shortint::CompressedKeySwitchingKey,
 }
 
-impl<'keys> From<CompressedKeySwitchingKeyBuildHelper<'keys>> for CompressedKeySwitchingKey {
+impl From<CompressedKeySwitchingKeyBuildHelper<'_>> for CompressedKeySwitchingKey {
     fn from(value: CompressedKeySwitchingKeyBuildHelper) -> Self {
         Self {
             key: value.build_helper.into(),
@@ -226,9 +252,7 @@ impl<'keys> From<CompressedKeySwitchingKeyBuildHelper<'keys>> for CompressedKeyS
     }
 }
 
-impl<'keys> From<CompressedKeySwitchingKeyBuildHelper<'keys>>
-    for CompressedKeySwitchingKeyMaterial
-{
+impl From<CompressedKeySwitchingKeyBuildHelper<'_>> for CompressedKeySwitchingKeyMaterial {
     fn from(value: CompressedKeySwitchingKeyBuildHelper) -> Self {
         Self {
             material: value.build_helper.key_switching_key_material,
@@ -271,5 +295,23 @@ impl CompressedKeySwitchingKey {
         KeySwitchingKey {
             key: self.key.decompress(),
         }
+    }
+}
+
+impl ParameterSetConformant for KeySwitchingKeyMaterial {
+    type ParameterSet = KeySwitchingKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self { material } = self;
+        material.is_conformant(parameter_set)
+    }
+}
+
+impl ParameterSetConformant for CompressedKeySwitchingKeyMaterial {
+    type ParameterSet = KeySwitchingKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self { material } = self;
+        material.is_conformant(parameter_set)
     }
 }

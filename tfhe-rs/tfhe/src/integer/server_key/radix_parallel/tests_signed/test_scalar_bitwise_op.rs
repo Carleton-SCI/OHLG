@@ -6,21 +6,22 @@ use crate::integer::server_key::radix_parallel::tests_signed::{
 use crate::integer::server_key::radix_parallel::tests_unsigned::{
     nb_tests_for_params, CpuFunctionExecutor,
 };
-use crate::integer::tests::create_parametrized_test;
+use crate::integer::tests::create_parameterized_test;
 use crate::integer::{IntegerKeyKind, RadixClientKey, ServerKey, SignedRadixCiphertext};
 #[cfg(tarpaulin)]
 use crate::shortint::parameters::coverage_parameters::*;
+use crate::shortint::parameters::test_params::*;
 use crate::shortint::parameters::*;
 use rand::Rng;
 use std::sync::Arc;
 
-create_parametrized_test!(integer_signed_default_scalar_bitand);
-create_parametrized_test!(integer_signed_default_scalar_bitor);
-create_parametrized_test!(integer_signed_default_scalar_bitxor);
+create_parameterized_test!(integer_signed_default_scalar_bitand);
+create_parameterized_test!(integer_signed_default_scalar_bitor);
+create_parameterized_test!(integer_signed_default_scalar_bitxor);
 
 fn integer_signed_default_scalar_bitand<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::scalar_bitand_parallelized);
     signed_default_scalar_bitand_test(param, executor);
@@ -28,7 +29,7 @@ where
 
 fn integer_signed_default_scalar_bitor<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::scalar_bitor_parallelized);
     signed_default_scalar_bitor_test(param, executor);
@@ -36,14 +37,14 @@ where
 
 fn integer_signed_default_scalar_bitxor<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::scalar_bitxor_parallelized);
     signed_default_scalar_bitxor_test(param, executor);
 }
 pub(crate) fn signed_default_scalar_bitand_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a SignedRadixCiphertext, i64), SignedRadixCiphertext>,
 {
     let param = param.into();
@@ -88,7 +89,7 @@ where
 
 pub(crate) fn signed_default_scalar_bitor_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a SignedRadixCiphertext, i64), SignedRadixCiphertext>,
 {
     let param = param.into();
@@ -134,7 +135,7 @@ where
 
 pub(crate) fn signed_default_scalar_bitxor_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a SignedRadixCiphertext, i64), SignedRadixCiphertext>,
 {
     let param = param.into();

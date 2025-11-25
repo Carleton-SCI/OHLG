@@ -1,29 +1,14 @@
+use ark_ec::pairing::PairingOutput;
+use ark_ec::short_weierstrass::Affine;
 use ark_ec::{AdditiveGroup as Group, CurveGroup, VariableBaseMSM};
 use ark_ff::{BigInt, Field, MontFp, Zero};
 use ark_poly::univariate::DensePolynomial;
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Compress, Validate};
 use core::fmt;
 use core::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 use serde::{Deserialize, Serialize};
+use tfhe_versionable::NotVersioned;
 
-fn ark_se<S, A: CanonicalSerialize>(a: &A, s: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    let mut bytes = vec![];
-    a.serialize_with_mode(&mut bytes, Compress::Yes)
-        .map_err(serde::ser::Error::custom)?;
-    s.serialize_bytes(&bytes)
-}
-
-fn ark_de<'de, D, A: CanonicalDeserialize>(data: D) -> Result<A, D::Error>
-where
-    D: serde::de::Deserializer<'de>,
-{
-    let s: Vec<u8> = serde::de::Deserialize::deserialize(data)?;
-    let a = A::deserialize_with_mode(s.as_slice(), Compress::Yes, Validate::Yes);
-    a.map_err(serde::de::Error::custom)
-}
+use crate::serialization::{SerializableAffine, SerializableFp, SerializableFp12, SerializableFp2};
 
 struct MontIntDisplay<'a, T>(&'a T);
 
@@ -62,7 +47,7 @@ pub trait FieldOps:
     fn from_u128(n: u128) -> Self;
     fn from_u64(n: u64) -> Self;
     fn from_i64(n: i64) -> Self;
-    fn to_bytes(self) -> impl AsRef<[u8]>;
+    fn to_le_bytes(self) -> impl AsRef<[u8]>;
     fn rand(rng: &mut dyn rand::RngCore) -> Self;
     fn hash(values: &mut [Self], data: &[&[u8]]);
     fn hash_128bit(values: &mut [Self], data: &[&[u8]]);
@@ -112,6 +97,7 @@ pub trait CurveGroupOps<Zp>:
     + core::ops::Sub<Self, Output = Self>
     + core::ops::Neg<Output = Self>
     + core::iter::Sum
+    + PartialEq
 {
     const ZERO: Self;
     const GENERATOR: Self;
@@ -122,18 +108,33 @@ pub trait CurveGroupOps<Zp>:
         + Sync
         + core::fmt::Debug
         + serde::Serialize
-        + for<'de> serde::Deserialize<'de>
-        + CanonicalSerialize
-        + CanonicalDeserialize;
+        + for<'de> serde::Deserialize<'de>;
 
     fn projective(affine: Self::Affine) -> Self;
 
     fn mul_scalar(self, scalar: Zp) -> Self;
     fn multi_mul_scalar(bases: &[Self::Affine], scalars: &[Zp]) -> Self;
-    fn to_bytes(self) -> impl AsRef<[u8]>;
+    fn to_le_bytes(self) -> impl AsRef<[u8]>;
     fn double(self) -> Self;
     fn normalize(self) -> Self::Affine;
+    fn validate_projective(&self) -> bool {
+        Self::validate_affine(&self.normalize())
+    }
+    fn validate_affine(affine: &Self::Affine) -> bool;
 }
+
+/// Mark that an element can be compressed, by storing only the 'x' coordinates of the affine
+/// representation and getting the 'y' from the curve.
+pub trait Compressible: Sized {
+    type Compressed;
+    type UncompressError;
+
+    fn compress(&self) -> Self::Compressed;
+    fn uncompress(compressed: Self::Compressed) -> Result<Self, Self::UncompressError>;
+}
+
+pub type CompressedG1<G> = <<G as Curve>::G1 as Compressible>::Compressed;
+pub type CompressedG2<G> = <<G as Curve>::G2 as Compressible>::Compressed;
 
 pub trait PairingGroupOps<Zp, G1, G2>:
     Copy
@@ -151,10 +152,10 @@ pub trait PairingGroupOps<Zp, G1, G2>:
     fn pairing(x: G1, y: G2) -> Self;
 }
 
-pub trait Curve {
+pub trait Curve: Clone {
     type Zp: FieldOps;
-    type G1: CurveGroupOps<Self::Zp> + CanonicalSerialize + CanonicalDeserialize;
-    type G2: CurveGroupOps<Self::Zp> + CanonicalSerialize + CanonicalDeserialize;
+    type G1: CurveGroupOps<Self::Zp>;
+    type G2: CurveGroupOps<Self::Zp>;
     type Gt: PairingGroupOps<Self::Zp, Self::G1, Self::G2>;
 }
 
@@ -171,8 +172,8 @@ impl FieldOps for bls12_381::Zp {
     fn from_i64(n: i64) -> Self {
         Self::from_i64(n)
     }
-    fn to_bytes(self) -> impl AsRef<[u8]> {
-        self.to_bytes()
+    fn to_le_bytes(self) -> impl AsRef<[u8]> {
+        self.to_le_bytes()
     }
     fn rand(rng: &mut dyn rand::RngCore) -> Self {
         Self::rand(rng)
@@ -210,15 +211,20 @@ impl CurveGroupOps<bls12_381::Zp> for bls12_381::G1 {
     }
 
     fn mul_scalar(self, scalar: bls12_381::Zp) -> Self {
-        self.mul_scalar(scalar)
+        if scalar.inner == MontFp!("2") {
+            self.double()
+        } else {
+            self.mul_scalar(scalar)
+        }
     }
 
+    #[track_caller]
     fn multi_mul_scalar(bases: &[Self::Affine], scalars: &[bls12_381::Zp]) -> Self {
         Self::Affine::multi_mul_scalar(bases, scalars)
     }
 
-    fn to_bytes(self) -> impl AsRef<[u8]> {
-        self.to_bytes()
+    fn to_le_bytes(self) -> impl AsRef<[u8]> {
+        self.to_le_bytes()
     }
 
     fn double(self) -> Self {
@@ -229,6 +235,10 @@ impl CurveGroupOps<bls12_381::Zp> for bls12_381::G1 {
         Self::Affine {
             inner: self.inner.into_affine(),
         }
+    }
+
+    fn validate_affine(affine: &Self::Affine) -> bool {
+        affine.validate()
     }
 }
 
@@ -245,15 +255,20 @@ impl CurveGroupOps<bls12_381::Zp> for bls12_381::G2 {
     }
 
     fn mul_scalar(self, scalar: bls12_381::Zp) -> Self {
-        self.mul_scalar(scalar)
+        if scalar.inner == MontFp!("2") {
+            self.double()
+        } else {
+            self.mul_scalar(scalar)
+        }
     }
 
+    #[track_caller]
     fn multi_mul_scalar(bases: &[Self::Affine], scalars: &[bls12_381::Zp]) -> Self {
         Self::Affine::multi_mul_scalar(bases, scalars)
     }
 
-    fn to_bytes(self) -> impl AsRef<[u8]> {
-        self.to_bytes()
+    fn to_le_bytes(self) -> impl AsRef<[u8]> {
+        self.to_le_bytes()
     }
 
     fn double(self) -> Self {
@@ -265,6 +280,10 @@ impl CurveGroupOps<bls12_381::Zp> for bls12_381::G2 {
             inner: self.inner.into_affine(),
         }
     }
+
+    fn validate_affine(affine: &Self::Affine) -> bool {
+        affine.validate()
+    }
 }
 
 impl PairingGroupOps<bls12_381::Zp, bls12_381::G1, bls12_381::G2> for bls12_381::Gt {
@@ -273,6 +292,9 @@ impl PairingGroupOps<bls12_381::Zp, bls12_381::G1, bls12_381::G2> for bls12_381:
     }
 
     fn pairing(x: bls12_381::G1, y: bls12_381::G2) -> Self {
+        if x == bls12_381::G1::ZERO || y == bls12_381::G2::ZERO {
+            return Self::pairing(bls12_381::G1::ZERO, bls12_381::G2::GENERATOR);
+        }
         Self::pairing(x, y)
     }
 }
@@ -290,8 +312,8 @@ impl FieldOps for bls12_446::Zp {
     fn from_i64(n: i64) -> Self {
         Self::from_i64(n)
     }
-    fn to_bytes(self) -> impl AsRef<[u8]> {
-        self.to_bytes()
+    fn to_le_bytes(self) -> impl AsRef<[u8]> {
+        self.to_le_bytes()
     }
     fn rand(rng: &mut dyn rand::RngCore) -> Self {
         Self::rand(rng)
@@ -329,16 +351,25 @@ impl CurveGroupOps<bls12_446::Zp> for bls12_446::G1 {
     }
 
     fn mul_scalar(self, scalar: bls12_446::Zp) -> Self {
-        self.mul_scalar(scalar)
+        if scalar.inner == MontFp!("2") {
+            self.double()
+        } else {
+            self.mul_scalar(scalar)
+        }
     }
 
+    #[track_caller]
     fn multi_mul_scalar(bases: &[Self::Affine], scalars: &[bls12_446::Zp]) -> Self {
-        msm::msm_wnaf_g1_446(bases, scalars)
-        // Self::Affine::multi_mul_scalar(bases, scalars)
+        // overhead seems to not be worth it outside of wasm
+        if cfg!(target_family = "wasm") {
+            msm::msm_wnaf_g1_446(bases, scalars)
+        } else {
+            Self::Affine::multi_mul_scalar(bases, scalars)
+        }
     }
 
-    fn to_bytes(self) -> impl AsRef<[u8]> {
-        self.to_bytes()
+    fn to_le_bytes(self) -> impl AsRef<[u8]> {
+        self.to_le_bytes()
     }
 
     fn double(self) -> Self {
@@ -349,6 +380,10 @@ impl CurveGroupOps<bls12_446::Zp> for bls12_446::G1 {
         Self::Affine {
             inner: self.inner.into_affine(),
         }
+    }
+
+    fn validate_affine(affine: &Self::Affine) -> bool {
+        affine.validate()
     }
 }
 
@@ -365,15 +400,20 @@ impl CurveGroupOps<bls12_446::Zp> for bls12_446::G2 {
     }
 
     fn mul_scalar(self, scalar: bls12_446::Zp) -> Self {
-        self.mul_scalar(scalar)
+        if scalar.inner == MontFp!("2") {
+            self.double()
+        } else {
+            self.mul_scalar(scalar)
+        }
     }
 
+    #[track_caller]
     fn multi_mul_scalar(bases: &[Self::Affine], scalars: &[bls12_446::Zp]) -> Self {
         Self::Affine::multi_mul_scalar(bases, scalars)
     }
 
-    fn to_bytes(self) -> impl AsRef<[u8]> {
-        self.to_bytes()
+    fn to_le_bytes(self) -> impl AsRef<[u8]> {
+        self.to_le_bytes()
     }
 
     fn double(self) -> Self {
@@ -385,6 +425,10 @@ impl CurveGroupOps<bls12_446::Zp> for bls12_446::G2 {
             inner: self.inner.into_affine(),
         }
     }
+
+    fn validate_affine(affine: &Self::Affine) -> bool {
+        affine.validate()
+    }
 }
 
 impl PairingGroupOps<bls12_446::Zp, bls12_446::G1, bls12_446::G2> for bls12_446::Gt {
@@ -393,13 +437,18 @@ impl PairingGroupOps<bls12_446::Zp, bls12_446::G1, bls12_446::G2> for bls12_446:
     }
 
     fn pairing(x: bls12_446::G1, y: bls12_446::G2) -> Self {
+        if x == bls12_446::G1::ZERO || y == bls12_446::G2::ZERO {
+            return Self::pairing(bls12_446::G1::ZERO, bls12_446::G2::GENERATOR);
+        }
         Self::pairing(x, y)
     }
 }
 
-#[derive(Copy, Clone, serde::Serialize, serde::Deserialize)]
+// These are just ZSTs that are not actually produced and are only used for their
+// associated types. So it's ok to derive "NotVersioned" for them.
+#[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize, NotVersioned)]
 pub struct Bls12_381;
-#[derive(Copy, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Copy, Clone, serde::Serialize, serde::Deserialize, NotVersioned)]
 pub struct Bls12_446;
 
 impl Curve for Bls12_381 {

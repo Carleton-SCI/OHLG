@@ -1,12 +1,16 @@
 use crate::{TransCiphering, TriviumStream, TriviumStreamByte, TriviumStreamShortint};
 use tfhe::prelude::*;
+use tfhe::shortint::parameters::current_params::{
+    V1_5_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
+    V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+    V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128,
+};
 use tfhe::{generate_keys, ConfigBuilder, FheBool, FheUint64, FheUint8};
-
 // Values for these tests come from the github repo cantora/avr-crypto-lib, commit 2a5b018,
 // file testvectors/trivium-80.80.test-vectors
 
 fn get_hexadecimal_string_from_lsb_first_stream(a: Vec<bool>) -> String {
-    assert!(a.len() % 8 == 0);
+    assert!(a.len().is_multiple_of(8));
     let mut hexadecimal: String = "".to_string();
     for test in a.chunks(8) {
         // Encoding is bytes in LSB order
@@ -59,10 +63,10 @@ fn get_hexadecimal_string_from_lsb_first_stream(a: Vec<bool>) -> String {
 }
 
 fn get_hexagonal_string_from_bytes(a: Vec<u8>) -> String {
-    assert!(a.len() % 8 == 0);
+    assert!(a.len().is_multiple_of(8));
     let mut hexadecimal: String = "".to_string();
     for test in a {
-        hexadecimal.push_str(&format!("{:02X?}", test));
+        hexadecimal.push_str(&format!("{test:02X?}"));
     }
     hexadecimal
 }
@@ -70,7 +74,7 @@ fn get_hexagonal_string_from_bytes(a: Vec<u8>) -> String {
 fn get_hexagonal_string_from_u64(a: Vec<u64>) -> String {
     let mut hexadecimal: String = "".to_string();
     for test in a {
-        hexadecimal.push_str(&format!("{:016X?}", test));
+        hexadecimal.push_str(&format!("{test:016X?}"));
     }
     hexadecimal
 }
@@ -352,17 +356,20 @@ use tfhe::shortint::prelude::*;
 
 #[test]
 fn trivium_test_shortint_long() {
-    let config = ConfigBuilder::default().build();
+    let config = ConfigBuilder::default()
+        .use_custom_parameters(V1_5_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128)
+        .build();
     let (hl_client_key, hl_server_key) = generate_keys(config);
     let underlying_ck: tfhe::shortint::ClientKey = (*hl_client_key.as_ref()).clone().into();
     let underlying_sk: tfhe::shortint::ServerKey = (*hl_server_key.as_ref()).clone().into();
 
-    let (client_key, server_key): (ClientKey, ServerKey) = gen_keys(PARAM_MESSAGE_1_CARRY_1_KS_PBS);
+    let (client_key, server_key): (ClientKey, ServerKey) =
+        gen_keys(V1_5_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128);
 
     let ksk = KeySwitchingKey::new(
         (&client_key, Some(&server_key)),
         (&underlying_ck, &underlying_sk),
-        PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS,
+        V1_5_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
     );
 
     let key_string = "0053A6F94C9FF24598EB".to_string();

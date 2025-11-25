@@ -2,10 +2,12 @@ use tfhe_versionable::Versionize;
 
 use crate::backward_compatibility::keys::KeySwitchingKeyVersions;
 use crate::high_level_api::integers::{FheIntId, FheUintId};
+use crate::high_level_api::re_randomization::ReRandomizationMetadata;
 use crate::integer::BooleanBlock;
+use crate::named::Named;
 use crate::prelude::FheKeyswitch;
 pub use crate::shortint::parameters::key_switching::ShortintKeySwitchingParameters;
-use crate::{ClientKey, FheBool, FheInt, FheUint, ServerKey};
+use crate::{ClientKey, FheBool, FheInt, FheUint, ServerKey, Tag};
 use std::fmt::{Display, Formatter};
 
 #[derive(Copy, Clone, Debug)]
@@ -23,6 +25,8 @@ impl std::error::Error for IncompatibleParameters {}
 #[versionize(KeySwitchingKeyVersions)]
 pub struct KeySwitchingKey {
     key: crate::integer::key_switching_key::KeySwitchingKey,
+    tag_in: Tag,
+    tag_out: Tag,
 }
 
 impl KeySwitchingKey {
@@ -58,7 +62,17 @@ impl KeySwitchingKey {
                 (&key_pair_to.0.key.key, &key_pair_to.1.key.key),
                 params,
             ),
+            tag_in: key_pair_from.0.tag.clone(),
+            tag_out: key_pair_to.0.tag.clone(),
         }
+    }
+
+    pub fn tag_in(&self) -> &Tag {
+        &self.tag_in
+    }
+
+    pub fn tag_out(&self) -> &Tag {
+        &self.tag_out
     }
 }
 
@@ -69,7 +83,11 @@ where
     fn keyswitch(&self, input: &FheUint<Id>) -> FheUint<Id> {
         let radix = input.ciphertext.on_cpu();
         let casted = self.key.cast(&*radix);
-        FheUint::new(casted)
+        FheUint::new(
+            casted,
+            self.tag_out.clone(),
+            ReRandomizationMetadata::default(),
+        )
     }
 }
 
@@ -80,7 +98,11 @@ where
     fn keyswitch(&self, input: &FheInt<Id>) -> FheInt<Id> {
         let radix = input.ciphertext.on_cpu();
         let casted = self.key.cast(&*radix);
-        FheInt::new(casted)
+        FheInt::new(
+            casted,
+            self.tag_out.clone(),
+            ReRandomizationMetadata::default(),
+        )
     }
 }
 
@@ -88,6 +110,14 @@ impl FheKeyswitch<FheBool> for KeySwitchingKey {
     fn keyswitch(&self, input: &FheBool) -> FheBool {
         let boolean_block = input.ciphertext.on_cpu();
         let casted = self.key.key.cast(boolean_block.as_ref());
-        FheBool::new(BooleanBlock::new_unchecked(casted))
+        FheBool::new(
+            BooleanBlock::new_unchecked(casted),
+            self.tag_out.clone(),
+            ReRandomizationMetadata::default(),
+        )
     }
+}
+
+impl Named for KeySwitchingKey {
+    const NAME: &'static str = "high_level_api::KeySwitchingKey";
 }

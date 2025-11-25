@@ -21,30 +21,6 @@ pub unsafe extern "C" fn config_builder_default(result: *mut *mut ConfigBuilder)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn config_builder_default_with_small_encryption(
-    builder: *mut *mut ConfigBuilder,
-) -> c_int {
-    catch_panic(|| {
-        check_ptr_is_non_null_and_aligned(builder).unwrap();
-
-        let inner_builder = crate::high_level_api::ConfigBuilder::default_with_small_encryption();
-        *builder = Box::into_raw(Box::new(ConfigBuilder(inner_builder)));
-    })
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn config_builder_default_with_big_encryption(
-    builder: *mut *mut ConfigBuilder,
-) -> c_int {
-    catch_panic(|| {
-        check_ptr_is_non_null_and_aligned(builder).unwrap();
-
-        let inner_builder = crate::high_level_api::ConfigBuilder::default_with_big_encryption();
-        *builder = Box::into_raw(Box::new(ConfigBuilder(inner_builder)));
-    })
-}
-
-#[no_mangle]
 pub unsafe extern "C" fn config_builder_clone(
     input: *const ConfigBuilder,
     result: *mut *mut ConfigBuilder,
@@ -69,9 +45,7 @@ pub unsafe extern "C" fn config_builder_use_custom_parameters(
         let params: crate::shortint::ClassicPBSParameters =
             shortint_block_parameters.try_into().unwrap();
 
-        let inner = Box::from_raw(*builder)
-            .0
-            .use_custom_parameters(params, None);
+        let inner = Box::from_raw(*builder).0.use_custom_parameters(params);
         *builder = Box::into_raw(Box::new(ConfigBuilder(inner)));
     })
 }

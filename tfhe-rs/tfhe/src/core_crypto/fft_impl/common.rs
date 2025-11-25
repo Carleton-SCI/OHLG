@@ -4,20 +4,18 @@ use crate::core_crypto::commons::parameters::{
 };
 use crate::core_crypto::commons::traits::Container;
 use crate::core_crypto::entities::*;
-use crate::core_crypto::prelude::{CastInto, CiphertextModulusLog, ContainerMut};
+use crate::core_crypto::prelude::{CiphertextModulusLog, ContainerMut};
 use dyn_stack::{PodStack, SizeOverflow, StackReq};
-
-pub fn pbs_modulus_switch<Scalar: UnsignedInteger + CastInto<usize>>(
-    input: Scalar,
-    polynomial_size: PolynomialSize,
-) -> usize {
-    modulus_switch(input, polynomial_size.to_blind_rotation_input_modulus_log()).cast_into()
-}
 
 pub fn modulus_switch<Scalar: UnsignedInteger>(
     input: Scalar,
     log_modulus: CiphertextModulusLog,
 ) -> Scalar {
+    assert!(log_modulus.0 <= Scalar::BITS);
+    if log_modulus.0 == Scalar::BITS {
+        return input;
+    }
+
     // Flooring output_to_floor is equivalent to rounding the input
     let output_to_floor = input.wrapping_add(Scalar::ONE << (Scalar::BITS - log_modulus.0 - 1));
 
@@ -43,7 +41,7 @@ pub trait FourierBootstrapKey<Scalar: UnsignedInteger> {
         &mut self,
         coef_bsk: &LweBootstrapKey<ContBsk>,
         fft: &Self::Fft,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) where
         ContBsk: Container<Element = Scalar>;
 
@@ -59,7 +57,7 @@ pub trait FourierBootstrapKey<Scalar: UnsignedInteger> {
         lwe_in: &LweCiphertext<ContLweIn>,
         accumulator: &GlweCiphertext<ContAcc>,
         fft: &Self::Fft,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) where
         ContLweOut: ContainerMut<Element = Scalar>,
         ContLweIn: Container<Element = Scalar>,

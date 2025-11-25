@@ -5,6 +5,8 @@
 pub mod ggsw_conversion;
 pub mod ggsw_encryption;
 pub mod glwe_encryption;
+pub mod glwe_keyswitch;
+pub mod glwe_keyswitch_key_generation;
 pub mod glwe_linear_algebra;
 pub mod glwe_sample_extraction;
 pub mod glwe_secret_key_generation;
@@ -30,6 +32,8 @@ pub mod lwe_wopbs;
 #[cfg(feature = "zk-pok")]
 pub mod lwe_zero_knowledge_verification;
 pub mod misc;
+pub mod modulus_switch;
+pub mod modulus_switch_noise_reduction;
 pub mod polynomial_algorithms;
 pub mod seeded_ggsw_ciphertext_decompression;
 pub mod seeded_ggsw_ciphertext_list_decompression;
@@ -53,6 +57,8 @@ pub(crate) mod test;
 pub use ggsw_conversion::*;
 pub use ggsw_encryption::*;
 pub use glwe_encryption::*;
+pub use glwe_keyswitch::*;
+pub use glwe_keyswitch_key_generation::*;
 pub use glwe_linear_algebra::*;
 pub use glwe_sample_extraction::*;
 pub use glwe_secret_key_generation::*;
@@ -77,6 +83,7 @@ pub use lwe_secret_key_generation::*;
 pub use lwe_wopbs::*;
 #[cfg(feature = "zk-pok")]
 pub use lwe_zero_knowledge_verification::*;
+pub use modulus_switch::*;
 pub use seeded_ggsw_ciphertext_decompression::*;
 pub use seeded_ggsw_ciphertext_list_decompression::*;
 pub use seeded_glwe_ciphertext_decompression::*;

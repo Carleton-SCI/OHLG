@@ -1,7 +1,7 @@
 use super::*;
 use crate::core_crypto::commons::test_tools::{modular_distance, new_random_generator};
 use aligned_vec::avec;
-use dyn_stack::{GlobalPodBuffer, ReborrowMut};
+use dyn_stack::GlobalPodBuffer;
 
 fn test_roundtrip<Scalar: UnsignedTorus>() {
     let mut generator = new_random_generator();
@@ -24,7 +24,7 @@ fn test_roundtrip<Scalar: UnsignedTorus>() {
         }
 
         let mut mem = GlobalPodBuffer::new(fft.backward_scratch().unwrap());
-        let mut stack = PodStack::new(&mut mem);
+        let stack = PodStack::new(&mut mem);
 
         fft.forward_as_torus(
             &mut fourier_re0,
@@ -39,10 +39,10 @@ fn test_roundtrip<Scalar: UnsignedTorus>() {
             &fourier_re1,
             &fourier_im0,
             &fourier_im1,
-            stack.rb_mut(),
+            stack,
         );
 
-        for (expected, actual) in izip!(poly.as_ref().iter(), roundtrip.as_ref().iter()) {
+        for (expected, actual) in izip_eq!(poly.as_ref().iter(), roundtrip.as_ref().iter()) {
             if Scalar::BITS <= 64 {
                 assert_eq!(*expected, *actual);
             } else {
@@ -103,7 +103,7 @@ fn test_product<Scalar: UnsignedTorus>() {
             let mut fourier1_im1 = avec![0.0f64; fourier_size].into_boxed_slice();
 
             let integer_magnitude = 16;
-            for (x, y) in izip!(poly0.as_mut().iter_mut(), poly1.as_mut().iter_mut()) {
+            for (x, y) in izip_eq!(poly0.as_mut().iter_mut(), poly1.as_mut().iter_mut()) {
                 *x = generator.random_uniform();
                 *y = generator.random_uniform();
 
@@ -111,7 +111,7 @@ fn test_product<Scalar: UnsignedTorus>() {
             }
 
             let mut mem = GlobalPodBuffer::new(fft.backward_scratch().unwrap());
-            let mut stack = PodStack::new(&mut mem);
+            let stack = PodStack::new(&mut mem);
 
             fft.forward_as_torus(
                 &mut fourier0_re0,
@@ -128,7 +128,7 @@ fn test_product<Scalar: UnsignedTorus>() {
                 &poly1,
             );
 
-            for (f0_re0, f0_re1, f0_im0, f0_im1, f1_re0, f1_re1, f1_im0, f1_im1) in izip!(
+            for (f0_re0, f0_re1, f0_im0, f0_im1, f1_re0, f1_re1, f1_im0, f1_im1) in izip_eq!(
                 &mut *fourier0_re0,
                 &mut *fourier0_re1,
                 &mut *fourier0_im0,
@@ -153,7 +153,7 @@ fn test_product<Scalar: UnsignedTorus>() {
                 &fourier0_re1,
                 &fourier0_im0,
                 &fourier0_im1,
-                stack.rb_mut(),
+                stack,
             );
             convolution_naive(
                 convolution_from_naive.as_mut(),
@@ -161,7 +161,7 @@ fn test_product<Scalar: UnsignedTorus>() {
                 poly1.as_ref(),
             );
 
-            for (expected, actual) in izip!(
+            for (expected, actual) in izip_eq!(
                 convolution_from_naive.as_ref().iter(),
                 convolution_from_fft.as_ref().iter()
             ) {

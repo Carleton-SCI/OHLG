@@ -162,7 +162,150 @@ where
     }
 }
 
-create_parametrized_test!(lwe_encrypt_pbs_decrypt_custom_mod);
+create_parameterized_test!(lwe_encrypt_pbs_decrypt_custom_mod);
+
+fn lwe_encrypt_batch_pbs_decrypt_custom_mod<Scalar>(params: ClassicTestParams<Scalar>)
+where
+    Scalar: UnsignedTorus
+        + Sync
+        + Send
+        + CastFrom<usize>
+        + CastInto<usize>
+        + Serialize
+        + DeserializeOwned,
+    ClassicTestParams<Scalar>: KeyCacheAccess<Keys = ClassicBootstrapKeys<Scalar>>,
+{
+    let lwe_noise_distribution = params.lwe_noise_distribution;
+    let ciphertext_modulus = params.ciphertext_modulus;
+    let message_modulus_log = params.message_modulus_log;
+    let msg_modulus = Scalar::ONE.shl(message_modulus_log.0);
+    let encoding_with_padding = get_encoding_with_padding(ciphertext_modulus);
+    let glwe_dimension = params.glwe_dimension;
+    let polynomial_size = params.polynomial_size;
+
+    let ciphertext_count = 2;
+
+    let mut rsc = TestResources::new();
+
+    let f = |x: Scalar| x;
+
+    let delta: Scalar = encoding_with_padding / msg_modulus;
+    let mut msg = msg_modulus;
+
+    let accumulator = generate_programmable_bootstrap_glwe_lut(
+        polynomial_size,
+        glwe_dimension.to_glwe_size(),
+        msg_modulus.cast_into(),
+        ciphertext_modulus,
+        delta,
+        f,
+    );
+
+    assert!(check_encrypted_content_respects_mod(
+        &accumulator,
+        ciphertext_modulus
+    ));
+
+    while msg != Scalar::ZERO {
+        msg = msg.wrapping_sub(Scalar::ONE);
+
+        let mut keys_gen = |params| generate_keys(params, &mut rsc);
+        let keys = gen_keys_or_get_from_cache_if_enabled(params, &mut keys_gen);
+        let (input_lwe_secret_key, output_lwe_secret_key, fbsk) =
+            (keys.small_lwe_sk, keys.big_lwe_sk, keys.fbsk);
+
+        for _ in 0..NB_TESTS {
+            let plaintext = msg * delta;
+
+            let mut lwe_ciphertext_in = LweCiphertextListOwned::<Scalar>::new(
+                Scalar::ZERO,
+                input_lwe_secret_key.lwe_dimension().to_lwe_size(),
+                LweCiphertextCount(ciphertext_count),
+                ciphertext_modulus,
+            );
+
+            encrypt_lwe_ciphertext_list(
+                &input_lwe_secret_key,
+                &mut lwe_ciphertext_in,
+                &PlaintextList::from_container(vec![plaintext; ciphertext_count]),
+                lwe_noise_distribution,
+                &mut rsc.encryption_random_generator,
+            );
+
+            assert!(lwe_ciphertext_in
+                .iter()
+                .all(|ct| check_encrypted_content_respects_mod(&ct, ciphertext_modulus)));
+
+            let mut accumulator_list = GlweCiphertextList::new(
+                Scalar::ZERO,
+                glwe_dimension.to_glwe_size(),
+                polynomial_size,
+                GlweCiphertextCount(ciphertext_count),
+                ciphertext_modulus,
+            );
+
+            for mut glwe in accumulator_list.iter_mut() {
+                glwe.as_mut().copy_from_slice(accumulator.as_ref());
+            }
+
+            // Allocate the LweCiphertext to store the result of the PBS
+            let mut out_pbs_ct = LweCiphertextList::new(
+                Scalar::ZERO,
+                output_lwe_secret_key.lwe_dimension().to_lwe_size(),
+                LweCiphertextCount(ciphertext_count),
+                ciphertext_modulus,
+            );
+
+            let mut buffers = ComputationBuffers::new();
+
+            let fft = Fft::new(fbsk.polynomial_size());
+            let fft = fft.as_view();
+
+            buffers.resize(
+                batch_programmable_bootstrap_lwe_ciphertext_mem_optimized_requirement::<Scalar>(
+                    fbsk.glwe_size(),
+                    fbsk.polynomial_size(),
+                    CiphertextCount(ciphertext_count),
+                    fft,
+                )
+                .unwrap()
+                .unaligned_bytes_required(),
+            );
+
+            batch_programmable_bootstrap_lwe_ciphertext_mem_optimized(
+                &lwe_ciphertext_in,
+                &mut out_pbs_ct,
+                &accumulator_list,
+                &fbsk,
+                fft,
+                buffers.stack(),
+            );
+
+            assert!(out_pbs_ct
+                .iter()
+                .all(|ct| check_encrypted_content_respects_mod(&ct, ciphertext_modulus)));
+
+            let mut decrypted_list =
+                PlaintextList::new(Scalar::ZERO, PlaintextCount(ciphertext_count));
+
+            decrypt_lwe_ciphertext_list(&output_lwe_secret_key, &out_pbs_ct, &mut decrypted_list);
+
+            let decoded_list = decrypted_list
+                .iter()
+                .map(|ct| round_decode(*ct.0, delta) % msg_modulus)
+                .collect::<Vec<Scalar>>();
+
+            assert!(decoded_list.iter().all(|ct| *ct == f(msg)));
+        }
+
+        // In coverage, we break after one while loop iteration, changing message values does not
+        // yield higher coverage
+        #[cfg(tarpaulin)]
+        break;
+    }
+}
+
+create_parameterized_test!(lwe_encrypt_batch_pbs_decrypt_custom_mod);
 
 // Here we will define a helper function to generate a many lut accumulator for a PBS
 fn generate_accumulator_many_lut<Scalar: UnsignedTorus + CastFrom<usize>>(
@@ -252,6 +395,8 @@ where
     let glwe_dimension = params.glwe_dimension;
     let polynomial_size = params.polynomial_size;
 
+    let log_modulus = polynomial_size.to_blind_rotation_input_modulus_log();
+
     let total_plaintext_modulus = msg_modulus;
 
     let mut rsc = TestResources::new();
@@ -261,9 +406,9 @@ where
     assert!(total_plaintext_modulus > Scalar::cast_from(4u128));
 
     let f1 = |x: Scalar| x % total_plaintext_modulus;
-    let f2 = |x: Scalar| (x.wrapping_mul(Scalar::cast_from(3u128)) % total_plaintext_modulus);
-    let f3 = |x: Scalar| ((x + Scalar::ONE) % total_plaintext_modulus);
-    let f4 = |x: Scalar| ((x / Scalar::TWO) % total_plaintext_modulus);
+    let f2 = |x: Scalar| x.wrapping_mul(Scalar::cast_from(3u128)) % total_plaintext_modulus;
+    let f3 = |x: Scalar| (x + Scalar::ONE) % total_plaintext_modulus;
+    let f4 = |x: Scalar| (x / Scalar::TWO) % total_plaintext_modulus;
 
     let funcs: [&dyn Fn(Scalar) -> Scalar; 4] = [&f1, &f2, &f3, &f4];
 
@@ -303,6 +448,22 @@ where
             ciphertext_modulus
         ));
 
+        let fft = Fft::new(polynomial_size);
+
+        let fft = fft.as_view();
+
+        let mut buffers = ComputationBuffers::new();
+
+        buffers.resize(
+            blind_rotate_assign_mem_optimized_requirement::<Scalar>(
+                glwe_dimension.to_glwe_size(),
+                polynomial_size,
+                fft,
+            )
+            .unwrap()
+            .unaligned_bytes_required(),
+        );
+
         while msg != Scalar::ZERO {
             msg = msg.wrapping_sub(Scalar::ONE);
 
@@ -329,7 +490,9 @@ where
 
                 let mut tmp_acc = accumulator.clone();
 
-                blind_rotate_assign(&lwe_ciphertext_in, &mut tmp_acc, &fbsk);
+                let msed = lwe_ciphertext_modulus_switch(lwe_ciphertext_in, log_modulus);
+
+                blind_rotate_assign_mem_optimized(&msed, &mut tmp_acc, &fbsk, fft, buffers.stack());
 
                 assert!(check_encrypted_content_respects_mod(
                     &tmp_acc,
@@ -370,7 +533,7 @@ where
     }
 }
 
-create_parametrized_test!(lwe_encrypt_pbs_many_lut_decrypt_custom_mod);
+create_parameterized_test!(lwe_encrypt_pbs_many_lut_decrypt_custom_mod);
 
 // DISCLAIMER: all parameters here are not guaranteed to be secure or yield correct computations
 pub const TEST_PARAMS_4_BITS_NATIVE_U128: ClassicTestParams<u128> = ClassicTestParams {
@@ -641,7 +804,11 @@ fn lwe_encrypt_pbs_ntt64_decrypt_custom_mod(params: ClassicTestParams<u64>) {
 
     buffers.resize(stack_size);
 
-    par_convert_standard_lwe_bootstrap_key_to_ntt64(&bsk, &mut nbsk);
+    par_convert_standard_lwe_bootstrap_key_to_ntt64(
+        &bsk,
+        &mut nbsk,
+        NttLweBootstrapKeyOption::Normalize,
+    );
 
     drop(bsk);
 
@@ -697,7 +864,7 @@ fn lwe_encrypt_pbs_ntt64_decrypt_custom_mod(params: ClassicTestParams<u64>) {
     }
 }
 
-create_parametrized_test!(lwe_encrypt_pbs_ntt64_decrypt_custom_mod {
+create_parameterized_test!(lwe_encrypt_pbs_ntt64_decrypt_custom_mod {
     TEST_PARAMS_3_BITS_SOLINAS_U64
 });
 
@@ -835,3 +1002,168 @@ fn test_lwe_encrypt_pbs_switch_mod_switch_scalar_decrypt_custom_mod() {
         break;
     }
 }
+
+fn lwe_encrypt_pbs_ntt64_bnf_decrypt(params: ClassicTestParams<u64>) {
+    let input_lwe_dimension = params.lwe_dimension;
+    let lwe_noise_distribution = params.lwe_noise_distribution;
+    let glwe_noise_distribution = params.glwe_noise_distribution;
+    // NB: Bnf implementation use Ct with native modulus and then modswitch for the Ntt
+    let ciphertext_modulus = CiphertextModulus::new_native();
+    let message_modulus_log = params.message_modulus_log;
+    let msg_modulus = 1u64 << message_modulus_log.0;
+    let encoding_with_padding = get_encoding_with_padding(ciphertext_modulus);
+    let glwe_dimension = params.glwe_dimension;
+    let polynomial_size = params.polynomial_size;
+    let decomp_base_log = params.pbs_base_log;
+    let decomp_level_count = params.pbs_level;
+
+    let mut rsc = TestResources::new();
+
+    let f = |x: u64| x;
+
+    let delta: u64 = encoding_with_padding / msg_modulus;
+    let mut msg = msg_modulus;
+
+    let accumulator = generate_programmable_bootstrap_glwe_lut(
+        polynomial_size,
+        glwe_dimension.to_glwe_size(),
+        msg_modulus.cast_into(),
+        ciphertext_modulus,
+        delta,
+        f,
+    );
+
+    assert!(check_encrypted_content_respects_mod(
+        &accumulator,
+        ciphertext_modulus
+    ));
+
+    while msg != 0 {
+        msg = msg.wrapping_sub(1_u64);
+
+        // Create the LweSecretKey
+        let input_lwe_secret_key = allocate_and_generate_new_binary_lwe_secret_key(
+            input_lwe_dimension,
+            &mut rsc.secret_random_generator,
+        );
+        let output_glwe_secret_key = allocate_and_generate_new_binary_glwe_secret_key(
+            glwe_dimension,
+            polynomial_size,
+            &mut rsc.secret_random_generator,
+        );
+        let output_lwe_secret_key = output_glwe_secret_key.clone().into_lwe_secret_key();
+
+        let mut bsk = LweBootstrapKey::new(
+            0u64,
+            glwe_dimension.to_glwe_size(),
+            polynomial_size,
+            decomp_base_log,
+            decomp_level_count,
+            input_lwe_dimension,
+            ciphertext_modulus,
+        );
+
+        par_generate_lwe_bootstrap_key(
+            &input_lwe_secret_key,
+            &output_glwe_secret_key,
+            &mut bsk,
+            glwe_noise_distribution,
+            &mut rsc.encryption_random_generator,
+        );
+
+        assert!(check_encrypted_content_respects_mod(
+            &*bsk,
+            ciphertext_modulus
+        ));
+
+        use crate::core_crypto::commons::math::ntt::ntt64::Ntt64;
+        let mut nbsk = NttLweBootstrapKeyOwned::new(
+            0u64,
+            bsk.input_lwe_dimension(),
+            bsk.glwe_size(),
+            bsk.polynomial_size(),
+            bsk.decomposition_base_log(),
+            bsk.decomposition_level_count(),
+            params.ciphertext_modulus,
+        );
+
+        let mut buffers = ComputationBuffers::new();
+
+        let ntt = Ntt64::new(params.ciphertext_modulus, nbsk.polynomial_size());
+        let ntt = ntt.as_view();
+
+        let stack_size = programmable_bootstrap_ntt64_bnf_lwe_ciphertext_mem_optimized_requirement(
+            glwe_dimension.to_glwe_size(),
+            polynomial_size,
+            ntt,
+        )
+        .unwrap()
+        .try_unaligned_bytes_required()
+        .unwrap();
+
+        buffers.resize(stack_size);
+
+        par_convert_standard_lwe_bootstrap_key_to_ntt64(
+            &bsk,
+            &mut nbsk,
+            NttLweBootstrapKeyOption::Raw,
+        );
+
+        drop(bsk);
+
+        while msg != 0u64 {
+            msg = msg.wrapping_sub(1u64);
+            for _ in 0..NB_TESTS {
+                let plaintext = Plaintext(msg * delta);
+
+                let lwe_ciphertext_in = allocate_and_encrypt_new_lwe_ciphertext(
+                    &input_lwe_secret_key,
+                    plaintext,
+                    lwe_noise_distribution,
+                    ciphertext_modulus,
+                    &mut rsc.encryption_random_generator,
+                );
+
+                assert!(check_encrypted_content_respects_mod(
+                    &lwe_ciphertext_in,
+                    ciphertext_modulus
+                ));
+
+                let mut out_pbs_ct = LweCiphertext::new(
+                    0u64,
+                    output_lwe_secret_key.lwe_dimension().to_lwe_size(),
+                    ciphertext_modulus,
+                );
+
+                programmable_bootstrap_ntt64_bnf_lwe_ciphertext_mem_optimized(
+                    &lwe_ciphertext_in,
+                    &mut out_pbs_ct,
+                    &accumulator,
+                    &nbsk,
+                    ntt,
+                    buffers.stack(),
+                );
+
+                assert!(check_encrypted_content_respects_mod(
+                    &out_pbs_ct,
+                    ciphertext_modulus
+                ));
+
+                let decrypted = decrypt_lwe_ciphertext(&output_lwe_secret_key, &out_pbs_ct);
+
+                let decoded = round_decode(decrypted.0, delta) % msg_modulus;
+
+                assert_eq!(decoded, f(msg));
+            }
+
+            // In coverage, we break after one while loop iteration, changing message values does
+            // not yield higher coverage
+            #[cfg(tarpaulin)]
+            break;
+        }
+    }
+}
+
+create_parameterized_test!(lwe_encrypt_pbs_ntt64_bnf_decrypt {
+    TEST_PARAMS_3_BITS_SOLINAS_U64
+});

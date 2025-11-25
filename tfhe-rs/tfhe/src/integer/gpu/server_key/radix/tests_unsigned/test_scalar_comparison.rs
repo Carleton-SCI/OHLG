@@ -1,7 +1,7 @@
 use crate::core_crypto::gpu::CudaStreams;
 use crate::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext;
 use crate::integer::gpu::server_key::radix::tests_unsigned::{
-    create_gpu_parametrized_test, GpuFunctionExecutor,
+    create_gpu_parameterized_test, GpuFunctionExecutor,
 };
 use crate::integer::gpu::{gen_keys_gpu, CudaServerKey};
 use crate::integer::server_key::radix_parallel::tests_unsigned::test_scalar_comparison::{
@@ -9,6 +9,7 @@ use crate::integer::server_key::radix_parallel::tests_unsigned::test_scalar_comp
     test_unchecked_scalar_minmax,
 };
 use crate::integer::U256;
+use crate::shortint::parameters::test_params::*;
 use crate::shortint::parameters::*;
 use rand::Rng;
 /// This macro generates the tests for a given scalar comparison fn
@@ -22,7 +23,7 @@ use rand::Rng;
 macro_rules! define_gpu_scalar_comparison_test_functions {
     ($comparison_name:ident, $clear_type:ty) => {
         ::paste::paste!{
-            fn [<integer_unchecked_scalar_ $comparison_name _ $clear_type:lower>]<P>(param: P) where P: Into<PBSParameters>{
+            fn [<integer_unchecked_scalar_ $comparison_name _ $clear_type:lower>]<P>(param: P) where P: Into<TestParameters>{
                 let num_tests = 1;
                 let executor = GpuFunctionExecutor::new(&CudaServerKey::[<unchecked_scalar_ $comparison_name>]);
                 test_unchecked_scalar_function(
@@ -33,7 +34,7 @@ macro_rules! define_gpu_scalar_comparison_test_functions {
                 )
             }
 
-            fn [<integer_default_scalar_ $comparison_name $clear_type:lower>]<P>(param: P) where P: Into<PBSParameters> {
+            fn [<integer_default_scalar_ $comparison_name $clear_type:lower>]<P>(param: P) where P: Into<TestParameters> {
                 let num_tests = 1;
                 let executor = GpuFunctionExecutor::new(&CudaServerKey::[<scalar_ $comparison_name>]);
                 test_default_scalar_function(
@@ -44,15 +45,13 @@ macro_rules! define_gpu_scalar_comparison_test_functions {
                 )
             }
 
-            create_gpu_parametrized_test!([<integer_unchecked_scalar_ $comparison_name _ $clear_type:lower>]{
-                PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-                PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-                PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+            create_gpu_parameterized_test!([<integer_unchecked_scalar_ $comparison_name _ $clear_type:lower>]{
+                PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+                PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
             });
-            create_gpu_parametrized_test!([<integer_default_scalar_ $comparison_name$clear_type:lower>]{
-                PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-                PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-                PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+            create_gpu_parameterized_test!([<integer_default_scalar_ $comparison_name$clear_type:lower>]{
+                PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+                PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
             });
         }
     };
@@ -60,7 +59,7 @@ macro_rules! define_gpu_scalar_comparison_test_functions {
 
 fn integer_unchecked_scalar_min_u256<P>(params: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = GpuFunctionExecutor::new(CudaServerKey::unchecked_scalar_min);
     test_unchecked_scalar_minmax(params, 2, executor, std::cmp::min::<U256>);
@@ -68,7 +67,7 @@ where
 
 fn integer_unchecked_scalar_max_u256<P>(params: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = GpuFunctionExecutor::new(CudaServerKey::unchecked_scalar_max);
     test_unchecked_scalar_minmax(params, 2, executor, std::cmp::max::<U256>);
@@ -76,7 +75,7 @@ where
 
 fn integer_scalar_min_u256<P>(params: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = GpuFunctionExecutor::new(CudaServerKey::scalar_min);
     test_default_scalar_minmax(params, 2, executor, std::cmp::min::<U256>);
@@ -84,7 +83,7 @@ where
 
 fn integer_scalar_max_u256<P>(params: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = GpuFunctionExecutor::new(CudaServerKey::scalar_max);
     test_default_scalar_minmax(params, 2, executor, std::cmp::max::<U256>);
@@ -95,7 +94,7 @@ where
 // compared to the ciphertext
 fn integer_unchecked_scalar_comparisons_edge<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let p = param.into();
     let num_block = (128f64 / (p.message_modulus().0 as f64).log(2.0)).ceil() as usize;
@@ -223,25 +222,121 @@ where
     }
 }
 
-create_gpu_parametrized_test!(integer_unchecked_scalar_min_u256 {
-    PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-    PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-    PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+fn integer_unchecked_scalar_comparisons_edge_one_block<P>(param: P)
+where
+    P: Into<TestParameters>,
+{
+    let p = param.into();
+    let num_block = 1;
+
+    let stream = CudaStreams::new_multi_gpu();
+
+    let (cks, sks) = gen_keys_gpu(p, &stream);
+    let message_modulus = cks.parameters().message_modulus().0;
+
+    let mut rng = rand::thread_rng();
+
+    for _ in 0..4 {
+        let clear_a = rng.gen_range(0..message_modulus);
+        let clear_b = rng.gen_range(0..message_modulus);
+
+        let a = cks.encrypt_radix(clear_a, num_block);
+        // Copy to the GPU
+        let d_a = CudaUnsignedRadixCiphertext::from_radix_ciphertext(&a, &stream);
+
+        // >=
+        {
+            let d_result = sks.unchecked_scalar_ge(&d_a, clear_b, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a >= clear_b);
+        }
+
+        // >
+        {
+            let d_result = sks.unchecked_scalar_gt(&d_a, clear_b, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a > clear_b);
+        }
+
+        // <=
+        {
+            let d_result = sks.unchecked_scalar_le(&d_a, clear_b, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a <= clear_b);
+        }
+
+        // <
+        {
+            let d_result = sks.unchecked_scalar_lt(&d_a, clear_b, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a < clear_b);
+        }
+
+        // ==
+        {
+            let d_result = sks.unchecked_scalar_eq(&d_a, clear_b, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a == clear_b);
+        }
+
+        // !=
+        {
+            let d_result = sks.unchecked_scalar_ne(&d_a, clear_b, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a != clear_b);
+        }
+
+        // Here the goal is to test, the branching
+        // made in the scalar sign function
+        //
+        // We are forcing one of the two branches to work on empty slices
+        {
+            let d_result = sks.unchecked_scalar_lt(&d_a, 0, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert!(!decrypted);
+
+            let d_result = sks.unchecked_scalar_lt(&d_a, message_modulus, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a < message_modulus);
+
+            // == (as it does not share same code)
+            let d_result = sks.unchecked_scalar_eq(&d_a, 0, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a == 0);
+
+            // != (as it does not share same code)
+            let d_result = sks.unchecked_scalar_ne(&d_a, message_modulus, &stream);
+            let result = d_result.to_boolean_block(&stream);
+            let decrypted = cks.decrypt_bool(&result);
+            assert_eq!(decrypted, clear_a != message_modulus);
+        }
+    }
+}
+
+create_gpu_parameterized_test!(integer_unchecked_scalar_min_u256 {
+    PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+    PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
 });
-create_gpu_parametrized_test!(integer_unchecked_scalar_max_u256 {
-    PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-    PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-    PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+create_gpu_parameterized_test!(integer_unchecked_scalar_max_u256 {
+    PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+    PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
 });
-create_gpu_parametrized_test!(integer_scalar_min_u256 {
-    PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-    PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-    PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+create_gpu_parameterized_test!(integer_scalar_min_u256 {
+    PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+    PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
 });
-create_gpu_parametrized_test!(integer_scalar_max_u256 {
-    PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-    PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-    PARAM_GPU_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
+create_gpu_parameterized_test!(integer_scalar_max_u256 {
+    PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+    PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
 });
 
 define_gpu_scalar_comparison_test_functions!(eq, U256);
@@ -251,4 +346,11 @@ define_gpu_scalar_comparison_test_functions!(le, U256);
 define_gpu_scalar_comparison_test_functions!(gt, U256);
 define_gpu_scalar_comparison_test_functions!(ge, U256);
 
-create_gpu_parametrized_test!(integer_unchecked_scalar_comparisons_edge);
+create_gpu_parameterized_test!(integer_unchecked_scalar_comparisons_edge {
+    PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+    PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+});
+create_gpu_parameterized_test!(integer_unchecked_scalar_comparisons_edge_one_block {
+    PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+    PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+});

@@ -1,13 +1,13 @@
 use crate::shortint::keycache::{KEY_CACHE, KEY_CACHE_KSK};
+use crate::shortint::parameters::test_params::*;
 use crate::shortint::parameters::ShortintKeySwitchingParameters;
-use crate::shortint::prelude::*;
 
 #[test]
 fn gen_multi_keys_test_fresh_ci_run_filter() {
     let keys = KEY_CACHE_KSK.get_from_param((
-        PARAM_MESSAGE_1_CARRY_1_KS_PBS,
-        PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-        PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS,
+        TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+        TEST_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128,
+        TEST_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
     ));
     let ck1 = keys.client_key_1();
     let (ck2, sk2) = (keys.client_key_2(), keys.server_key_2());
@@ -54,18 +54,18 @@ fn gen_multi_keys_test_fresh_ci_run_filter() {
 
 #[test]
 fn gen_multi_keys_test_fresh_2_ci_run_filter() {
-    let keys2 = KEY_CACHE.get_from_param(PARAM_MESSAGE_3_CARRY_3_KS_PBS);
+    let keys2 = KEY_CACHE.get_from_param(TEST_PARAM_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M128);
     let (ck2, sk2) = (keys2.client_key(), keys2.server_key());
 
     let ksk_params = ShortintKeySwitchingParameters::new(
-        ck2.parameters.ks_base_log(),
-        ck2.parameters.ks_level(),
-        ck2.parameters.encryption_key_choice(),
+        ck2.parameters().ks_base_log(),
+        ck2.parameters().ks_level(),
+        ck2.parameters().encryption_key_choice(),
     );
 
     let keys = KEY_CACHE_KSK.get_from_param((
-        PARAM_MESSAGE_1_CARRY_1_KS_PBS,
-        PARAM_MESSAGE_3_CARRY_3_KS_PBS,
+        TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+        TEST_PARAM_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M128,
         ksk_params,
     ));
     let ck1 = keys.client_key_1();
@@ -113,9 +113,9 @@ fn gen_multi_keys_test_fresh_2_ci_run_filter() {
 #[test]
 fn gen_multi_keys_test_add_with_overflow_ci_run_filter() {
     let keys = KEY_CACHE_KSK.get_from_param((
-        PARAM_MESSAGE_1_CARRY_1_KS_PBS,
-        PARAM_MESSAGE_3_CARRY_3_KS_PBS,
-        PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS,
+        TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+        TEST_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128,
+        TEST_PARAM_KEYSWITCH_1_1_KS_PBS_TO_2_2_KS_PBS_GAUSSIAN_2M128,
     ));
     let (ck1, sk1) = (keys.client_key_1(), keys.server_key_1());
     let (ck2, sk2) = (keys.client_key_2(), keys.server_key_2());
@@ -128,7 +128,12 @@ fn gen_multi_keys_test_add_with_overflow_ci_run_filter() {
     let c3 = sk1.unchecked_scalar_mul(&c1, 2);
     let c4 = sk1.unchecked_add(&c3, &c2);
 
-    let output_of_cast = ksk.cast(&c4);
+    // The optimized atomic pattern requires a ciphertext with NoiseLevel::NOMINAL, i.e. a
+    // ciphertext fresh out of a bootstrap
+    let id_lut = sk1.generate_lookup_table(|x| x);
+    let c5 = sk1.apply_lookup_table(&c4, &id_lut);
+
+    let output_of_cast = ksk.cast(&c5);
     let clear = ck2.decrypt(&output_of_cast);
     assert_eq!(clear, 3);
     let ct_carry = sk2.carry_extract(&output_of_cast);
@@ -138,18 +143,18 @@ fn gen_multi_keys_test_add_with_overflow_ci_run_filter() {
 
 #[test]
 fn gen_multi_keys_test_no_shift_ci_run_filter() {
-    let keys2 = KEY_CACHE.get_from_param(PARAM_MESSAGE_1_CARRY_1_KS_PBS);
+    let keys2 = KEY_CACHE.get_from_param(TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128);
     let ck2 = keys2.client_key();
 
     let ksk_params = ShortintKeySwitchingParameters::new(
-        ck2.parameters.ks_base_log(),
-        ck2.parameters.ks_level(),
-        ck2.parameters.encryption_key_choice(),
+        ck2.parameters().ks_base_log(),
+        ck2.parameters().ks_level(),
+        ck2.parameters().encryption_key_choice(),
     );
 
     let keys = KEY_CACHE_KSK.get_from_param((
-        PARAM_MESSAGE_1_CARRY_1_KS_PBS,
-        PARAM_MESSAGE_1_CARRY_1_KS_PBS,
+        TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+        TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
         ksk_params,
     ));
     let ksk = keys.key_switching_key();
@@ -159,18 +164,18 @@ fn gen_multi_keys_test_no_shift_ci_run_filter() {
 
 #[test]
 fn gen_multi_keys_test_truncate_ci_run_filter() {
-    let keys2 = KEY_CACHE.get_from_param(PARAM_MESSAGE_1_CARRY_1_KS_PBS);
+    let keys2 = KEY_CACHE.get_from_param(TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128);
     let (ck2, sk2) = (keys2.client_key(), keys2.server_key());
 
     let ksk_params = ShortintKeySwitchingParameters::new(
-        ck2.parameters.ks_base_log(),
-        ck2.parameters.ks_level(),
-        ck2.parameters.encryption_key_choice(),
+        ck2.parameters().ks_base_log(),
+        ck2.parameters().ks_level(),
+        ck2.parameters().encryption_key_choice(),
     );
 
     let keys = KEY_CACHE_KSK.get_from_param((
-        PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-        PARAM_MESSAGE_1_CARRY_1_KS_PBS,
+        TEST_PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128,
+        TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
         ksk_params,
     ));
     let (ck1, sk1) = (keys.client_key_1(), keys.server_key_1());
@@ -181,6 +186,7 @@ fn gen_multi_keys_test_truncate_ci_run_filter() {
     // Message 0 Carry 0
     let cipher = ck1.unchecked_encrypt(0);
     let output_of_cast = ksk.cast(&cipher);
+    assert_eq!(output_of_cast.degree.get(), 3);
     let clear = ck2.decrypt(&output_of_cast);
     assert_eq!(clear, 0);
     let ct_carry = sk2.carry_extract(&output_of_cast);
@@ -190,6 +196,7 @@ fn gen_multi_keys_test_truncate_ci_run_filter() {
     // Message 1 Carry 0
     let cipher = ck1.unchecked_encrypt(1);
     let output_of_cast = ksk.cast(&cipher);
+    assert_eq!(output_of_cast.degree.get(), 3);
     let clear = ck2.decrypt(&output_of_cast);
     assert_eq!(clear, 1);
     let ct_carry = sk2.carry_extract(&output_of_cast);
@@ -199,6 +206,7 @@ fn gen_multi_keys_test_truncate_ci_run_filter() {
     // Message 0 Carry 1
     let cipher = ck1.unchecked_encrypt(2);
     let output_of_cast = ksk.cast(&cipher);
+    assert_eq!(output_of_cast.degree.get(), 3);
     let clear = ck2.decrypt(&output_of_cast);
     assert_eq!(clear, 0);
     let ct_carry = sk2.carry_extract(&output_of_cast);
@@ -208,6 +216,7 @@ fn gen_multi_keys_test_truncate_ci_run_filter() {
     // Message 1 Carry 1
     let cipher = ck1.unchecked_encrypt(3);
     let output_of_cast = ksk.cast(&cipher);
+    assert_eq!(output_of_cast.degree.get(), 3);
     let clear = ck2.decrypt(&output_of_cast);
     assert_eq!(clear, 1);
     let ct_carry = sk2.carry_extract(&output_of_cast);
@@ -222,6 +231,7 @@ fn gen_multi_keys_test_truncate_ci_run_filter() {
     assert_eq!((clear, carry), (0, 3));
 
     let output_of_cast = ksk.cast(&cipher);
+    assert_eq!(output_of_cast.degree.get(), 3);
     let clear = ck2.decrypt(&output_of_cast);
     assert_eq!(clear, 0);
     let ct_carry = sk2.carry_extract(&output_of_cast);

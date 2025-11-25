@@ -4,10 +4,7 @@ use crate::shortint::Ciphertext;
 pub trait IntegerCiphertext: Clone {
     fn blocks(&self) -> &[Ciphertext];
     fn moduli(&self) -> Vec<u64> {
-        self.blocks()
-            .iter()
-            .map(|x| x.message_modulus.0 as u64)
-            .collect()
+        self.blocks().iter().map(|x| x.message_modulus.0).collect()
     }
 
     fn from_blocks(blocks: Vec<Ciphertext>) -> Self;
@@ -87,7 +84,7 @@ impl IntegerCiphertext for CrtCiphertext {
     }
 
     fn from_blocks(blocks: Vec<Ciphertext>) -> Self {
-        let moduli = blocks.iter().map(|x| x.message_modulus.0 as u64).collect();
+        let moduli = blocks.iter().map(|x| x.message_modulus.0).collect();
         Self { blocks, moduli }
     }
 
@@ -97,5 +94,23 @@ impl IntegerCiphertext for CrtCiphertext {
 
     fn moduli(&self) -> Vec<u64> {
         self.moduli.clone()
+    }
+}
+
+// Yet another trait, this is to avoid breaking the logic with IntegerCiphertext which BooleanBlock
+// does not implement for good reasons IIRC.
+pub trait AsShortintCiphertextSlice {
+    fn as_ciphertext_slice(&self) -> &[Ciphertext];
+}
+
+impl<T: IntegerCiphertext> AsShortintCiphertextSlice for T {
+    fn as_ciphertext_slice(&self) -> &[Ciphertext] {
+        self.blocks()
+    }
+}
+
+impl AsShortintCiphertextSlice for super::BooleanBlock {
+    fn as_ciphertext_slice(&self) -> &[Ciphertext] {
+        core::slice::from_ref(&self.0)
     }
 }

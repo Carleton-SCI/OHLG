@@ -8,8 +8,10 @@ int main(void) {
 
   // Note that simply changing parameters like this does not yield secure parameters
   // Its only done for the example / tests
-  ShortintPBSParameters params = SHORTINT_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M64;
+  ShortintPBSParameters params = SHORTINT_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
   assert(params.encryption_key_choice == ShortintEncryptionKeyChoiceBig);
+
+  ShortintCompactPublicKeyEncryptionParameters pke_params = SHORTINT_PARAM_PKE_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
 
   int status;
 
@@ -17,6 +19,8 @@ int main(void) {
   status = config_builder_default(&builder);
   assert(status == 0);
   status = config_builder_use_custom_parameters(&builder, params);
+  assert(status == 0);
+  status = use_dedicated_compact_public_key_parameters(&builder, pke_params);
   assert(status == 0);
 
   Config *config;
@@ -31,9 +35,8 @@ int main(void) {
   status = compact_pke_crs_from_config(config, max_num_bits, &crs);
   assert(status == 0);
 
-  CompactPkePublicParams *public_params;
-  status = compact_pke_crs_public_params(crs, &public_params);
-  assert(status == 0);
+#define METADATA_LEN 5
+  uint8_t metadata[METADATA_LEN] = {'c', '-', 'a', 'p', 'i'};
 
   ClientKey *client_key;
   ServerKey *server_key;
@@ -46,8 +49,6 @@ int main(void) {
   CompactPublicKey *pk;
   status = compact_public_key_new(client_key, &pk);
   assert(status == 0);
-
-
 
   // Then, we create the compact list
   ProvenCompactCiphertextList *compact_list = NULL;
@@ -69,8 +70,8 @@ int main(void) {
     status = compact_ciphertext_list_builder_push_u2(builder, 3);
     assert(status == 0);
 
-    status = compact_ciphertext_list_builder_build_with_proof_packed(builder, public_params,
-                                                              ZkComputeLoadProof, &compact_list);
+    status = compact_ciphertext_list_builder_build_with_proof_packed(
+        builder, crs, metadata, METADATA_LEN, ZkComputeLoadProof, &compact_list);
     assert(status == 0);
 
     // Don't forget to destroy the builder
@@ -84,8 +85,8 @@ int main(void) {
   FheUint2 *d = NULL;
   {
     CompactCiphertextListExpander *expander = NULL;
-    status = proven_compact_ciphertext_list_verify_and_expand(compact_list, public_params, pk,
-                                                              &expander);
+    status = proven_compact_ciphertext_list_verify_and_expand(compact_list, crs, pk,
+                                                              metadata, METADATA_LEN, &expander);
     assert(status == 0);
 
     status = compact_ciphertext_list_expander_get_fhe_uint32(expander, 0, &a);
@@ -131,7 +132,6 @@ int main(void) {
   client_key_destroy(client_key);
   server_key_destroy(server_key);
   compact_public_key_destroy(pk);
-  compact_pke_public_params_destroy(public_params);
   compact_pke_crs_destroy(crs);
 
   return EXIT_SUCCESS;

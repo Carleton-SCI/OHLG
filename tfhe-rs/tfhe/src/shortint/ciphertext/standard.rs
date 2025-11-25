@@ -3,8 +3,13 @@ use super::super::parameters::CiphertextConformanceParams;
 use super::common::*;
 use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::entities::*;
+use crate::core_crypto::prelude::{allocate_and_trivially_encrypt_new_lwe_ciphertext, LweSize};
 use crate::shortint::backward_compatibility::ciphertext::CiphertextVersions;
-use crate::shortint::parameters::{CarryModulus, MessageModulus};
+use crate::shortint::ciphertext::ReRandomizationSeed;
+use crate::shortint::key_switching_key::KeySwitchingKeyMaterialView;
+use crate::shortint::parameters::{AtomicPatternKind, CarryModulus, MessageModulus};
+use crate::shortint::public_key::compact::CompactPublicKey;
+use crate::shortint::{CiphertextModulus, PaddingBit, ShortintEncoding};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use tfhe_versionable::Versionize;
@@ -15,10 +20,12 @@ use tfhe_versionable::Versionize;
 pub struct Ciphertext {
     pub ct: LweCiphertextOwned<u64>,
     pub degree: Degree,
-    pub(crate) noise_level: NoiseLevel,
+    // For correctness reasons this field MUST remain private, this forces the use of the accessor
+    // which has noise checks enabled on demand
+    noise_level: NoiseLevel,
     pub message_modulus: MessageModulus,
     pub carry_modulus: CarryModulus,
-    pub pbs_order: PBSOrder,
+    pub atomic_pattern: AtomicPatternKind,
 }
 
 impl crate::named::Named for Ciphertext {
@@ -29,12 +36,21 @@ impl ParameterSetConformant for Ciphertext {
     type ParameterSet = CiphertextConformanceParams;
 
     fn is_conformant(&self, param: &CiphertextConformanceParams) -> bool {
-        self.ct.is_conformant(&param.ct_params)
-            && self.message_modulus == param.message_modulus
-            && self.carry_modulus == param.carry_modulus
-            && self.pbs_order == param.pbs_order
-            && self.degree == param.degree
-            && self.noise_level == param.noise_level
+        let Self {
+            ct,
+            degree,
+            noise_level,
+            message_modulus,
+            carry_modulus,
+            atomic_pattern,
+        } = self;
+
+        ct.is_conformant(&param.ct_params)
+            && *message_modulus == param.message_modulus
+            && *carry_modulus == param.carry_modulus
+            && *atomic_pattern == param.atomic_pattern
+            && *degree == param.degree
+            && *noise_level == param.noise_level
     }
 }
 
@@ -50,7 +66,7 @@ impl Clone for Ciphertext {
             degree: src_degree,
             message_modulus: src_message_modulus,
             carry_modulus: src_carry_modulus,
-            pbs_order: src_pbs_order,
+            atomic_pattern: src_atomic_pattern,
             noise_level: src_noise_level,
         } = self;
 
@@ -59,7 +75,7 @@ impl Clone for Ciphertext {
             degree: *src_degree,
             message_modulus: *src_message_modulus,
             carry_modulus: *src_carry_modulus,
-            pbs_order: *src_pbs_order,
+            atomic_pattern: *src_atomic_pattern,
             noise_level: *src_noise_level,
         }
     }
@@ -70,7 +86,7 @@ impl Clone for Ciphertext {
             degree: dst_degree,
             message_modulus: dst_message_modulus,
             carry_modulus: dst_carry_modulus,
-            pbs_order: dst_pbs_order,
+            atomic_pattern: dst_atomic_pattern,
             noise_level: dst_noise_level,
         } = self;
 
@@ -79,7 +95,7 @@ impl Clone for Ciphertext {
             degree: src_degree,
             message_modulus: src_message_modulus,
             carry_modulus: src_carry_modulus,
-            pbs_order: src_pbs_order,
+            atomic_pattern: src_atomic_pattern,
             noise_level: src_noise_level,
         } = source;
 
@@ -93,7 +109,7 @@ impl Clone for Ciphertext {
         *dst_degree = *src_degree;
         *dst_message_modulus = *src_message_modulus;
         *dst_carry_modulus = *src_carry_modulus;
-        *dst_pbs_order = *src_pbs_order;
+        *dst_atomic_pattern = *src_atomic_pattern;
         *dst_noise_level = *src_noise_level;
     }
 }
@@ -105,7 +121,7 @@ impl Ciphertext {
         noise_level: NoiseLevel,
         message_modulus: MessageModulus,
         carry_modulus: CarryModulus,
-        pbs_order: PBSOrder,
+        atomic_pattern: AtomicPatternKind,
     ) -> Self {
         Self {
             ct,
@@ -113,7 +129,7 @@ impl Ciphertext {
             noise_level,
             message_modulus,
             carry_modulus,
-            pbs_order,
+            atomic_pattern,
         }
     }
     pub fn carry_is_empty(&self) -> bool {
@@ -129,8 +145,18 @@ impl Ciphertext {
         self.noise_level
     }
 
-    pub fn set_noise_level(&mut self, noise_level: NoiseLevel) {
+    #[cfg_attr(any(feature = "noise-asserts", test), track_caller)]
+    pub fn set_noise_level(&mut self, noise_level: NoiseLevel, max_noise_level: MaxNoiseLevel) {
+        if cfg!(feature = "noise-asserts") || cfg!(test) {
+            max_noise_level.validate(noise_level).unwrap()
+        } else {
+            let _ = max_noise_level;
+        }
         self.noise_level = noise_level;
+    }
+
+    pub fn set_noise_level_to_nominal(&mut self) {
+        self.noise_level = NoiseLevel::NOMINAL;
     }
 
     /// Decrypts a trivial ciphertext
@@ -146,8 +172,8 @@ impl Ciphertext {
     /// # Example
     ///
     /// ```rust
+    /// use tfhe::shortint::gen_keys;
     /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
-    /// use tfhe::shortint::{gen_keys, Ciphertext};
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
@@ -179,15 +205,24 @@ impl Ciphertext {
     /// ```
     pub fn decrypt_trivial(&self) -> Result<u64, NotTrivialCiphertextError> {
         self.decrypt_trivial_message_and_carry()
-            .map(|x| x % self.message_modulus.0 as u64)
+            .map(|x| x % self.message_modulus.0)
+    }
+
+    pub(crate) fn encoding(&self, padding_bit: PaddingBit) -> ShortintEncoding<u64> {
+        ShortintEncoding {
+            ciphertext_modulus: self.ct.ciphertext_modulus(),
+            message_modulus: self.message_modulus,
+            carry_modulus: self.carry_modulus,
+            padding_bit,
+        }
     }
 
     /// See [Self::decrypt_trivial].
     /// # Example
     ///
     /// ```rust
+    /// use tfhe::shortint::gen_keys;
     /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
-    /// use tfhe::shortint::{gen_keys, Ciphertext};
     ///
     /// // Generate the client key and the server key:
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
@@ -200,7 +235,7 @@ impl Ciphertext {
     /// sks.unchecked_scalar_add_assign(&mut trivial_ct, clear as u8);
     ///
     /// let res = trivial_ct.decrypt_trivial();
-    /// let expected = (msg + clear) % PARAM_MESSAGE_2_CARRY_2_KS_PBS.message_modulus.0 as u64;
+    /// let expected = (msg + clear) % PARAM_MESSAGE_2_CARRY_2_KS_PBS.message_modulus.0;
     /// assert_eq!(Ok(expected), res);
     ///
     /// let res = trivial_ct.decrypt_trivial_message_and_carry();
@@ -208,17 +243,85 @@ impl Ciphertext {
     /// ```
     pub fn decrypt_trivial_message_and_carry(&self) -> Result<u64, NotTrivialCiphertextError> {
         if self.is_trivial() {
-            let delta = (1u64 << 63) / (self.message_modulus.0 * self.carry_modulus.0) as u64;
-            Ok(self.ct.get_body().data / delta)
+            let decoded = self
+                .encoding(PaddingBit::Yes)
+                .decode(Plaintext(*self.ct.get_body().data))
+                .0;
+            Ok(decoded)
         } else {
             Err(NotTrivialCiphertextError)
         }
     }
+
+    /// This function can be called after decompressing a [`Ciphertext`] from a
+    /// [`CompressedCiphertextList`](super::compressed_ciphertext_list::CompressedCiphertextList) to
+    /// re-randomize it before any computations.
+    ///
+    /// This function only supports [`PBSOrder::KeyswitchBootstrap`] ordered
+    /// [`Ciphertext`]/[`ServerKey`](crate::shortint::ServerKey).
+    ///
+    /// It uses a [`CompactPublicKey`] to generate a new encryption of 0, a
+    /// [`KeySwitchingKeyMaterialView`] is required to keyswitch between the secret key used to
+    /// generate the [`CompactPublicKey`] to the "big"/post PBS/GLWE secret key from the
+    /// [`ServerKey`](crate::shortint::ServerKey).
+    pub fn re_randomize_with_compact_public_key_encryption(
+        &mut self,
+        compact_public_key: &CompactPublicKey,
+        key_switching_key_material: &KeySwitchingKeyMaterialView<'_>,
+        seed: ReRandomizationSeed,
+    ) -> crate::Result<()> {
+        compact_public_key.re_randomize_ciphertexts(
+            std::slice::from_mut(self),
+            key_switching_key_material,
+            seed,
+        )
+    }
+}
+
+pub(crate) fn unchecked_create_trivial_with_lwe_size(
+    value: Cleartext<u64>,
+    lwe_size: LweSize,
+    message_modulus: MessageModulus,
+    carry_modulus: CarryModulus,
+    atomic_pattern: AtomicPatternKind,
+    ciphertext_modulus: CiphertextModulus,
+) -> Ciphertext {
+    let encoded = ShortintEncoding {
+        ciphertext_modulus,
+        message_modulus,
+        carry_modulus,
+        padding_bit: PaddingBit::Yes,
+    }
+    .encode(value);
+
+    let ct =
+        allocate_and_trivially_encrypt_new_lwe_ciphertext(lwe_size, encoded, ciphertext_modulus);
+
+    let degree = Degree::new(value.0);
+
+    Ciphertext::new(
+        ct,
+        degree,
+        NoiseLevel::ZERO,
+        message_modulus,
+        carry_modulus,
+        atomic_pattern,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shortint::ciphertext::ReRandomizationContext;
+    use crate::shortint::key_switching_key::KeySwitchingKeyBuildHelper;
+    use crate::shortint::keycache::KEY_CACHE;
+    use crate::shortint::parameters::test_params::{
+        TEST_COMP_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+        TEST_PARAM_KEYSWITCH_PKE_TO_BIG_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+        TEST_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+        TEST_PARAM_PKE_TO_BIG_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128_ZKV2,
+    };
+    use crate::shortint::public_key::compact::CompactPrivateKey;
     use crate::shortint::CiphertextModulus;
 
     #[test]
@@ -231,7 +334,7 @@ mod tests {
             degree: Degree::new(1),
             message_modulus: MessageModulus(1),
             carry_modulus: CarryModulus(1),
-            pbs_order: PBSOrder::KeyswitchBootstrap,
+            atomic_pattern: AtomicPatternKind::Standard(PBSOrder::KeyswitchBootstrap),
             noise_level: NoiseLevel::NOMINAL,
         };
 
@@ -243,7 +346,7 @@ mod tests {
             degree: Degree::new(42),
             message_modulus: MessageModulus(2),
             carry_modulus: CarryModulus(2),
-            pbs_order: PBSOrder::BootstrapKeyswitch,
+            atomic_pattern: AtomicPatternKind::Standard(PBSOrder::BootstrapKeyswitch),
             noise_level: NoiseLevel::NOMINAL,
         };
 
@@ -263,7 +366,7 @@ mod tests {
             degree: Degree::new(1),
             message_modulus: MessageModulus(1),
             carry_modulus: CarryModulus(1),
-            pbs_order: PBSOrder::KeyswitchBootstrap,
+            atomic_pattern: AtomicPatternKind::Standard(PBSOrder::KeyswitchBootstrap),
             noise_level: NoiseLevel::NOMINAL,
         };
 
@@ -275,7 +378,7 @@ mod tests {
             degree: Degree::new(42),
             message_modulus: MessageModulus(2),
             carry_modulus: CarryModulus(2),
-            pbs_order: PBSOrder::BootstrapKeyswitch,
+            atomic_pattern: AtomicPatternKind::Standard(PBSOrder::BootstrapKeyswitch),
             noise_level: NoiseLevel::NOMINAL,
         };
 
@@ -295,7 +398,7 @@ mod tests {
             degree: Degree::new(1),
             message_modulus: MessageModulus(1),
             carry_modulus: CarryModulus(1),
-            pbs_order: PBSOrder::KeyswitchBootstrap,
+            atomic_pattern: AtomicPatternKind::Standard(PBSOrder::KeyswitchBootstrap),
             noise_level: NoiseLevel::NOMINAL,
         };
 
@@ -307,7 +410,7 @@ mod tests {
             degree: Degree::new(42),
             message_modulus: MessageModulus(2),
             carry_modulus: CarryModulus(2),
-            pbs_order: PBSOrder::BootstrapKeyswitch,
+            atomic_pattern: AtomicPatternKind::Standard(PBSOrder::BootstrapKeyswitch),
             noise_level: NoiseLevel::NOMINAL,
         };
 
@@ -315,5 +418,57 @@ mod tests {
 
         c1.clone_from(&c2);
         assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn test_re_randomize_ciphertext_ci_run_filter() {
+        let params = TEST_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
+        let comp_params = TEST_COMP_PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
+        let cpk_params = TEST_PARAM_PKE_TO_BIG_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128_ZKV2;
+        let ks_params = TEST_PARAM_KEYSWITCH_PKE_TO_BIG_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
+
+        let key_entry = KEY_CACHE.get_from_param(params);
+        // Generate the client key and the server key:
+        let (cks, sks) = (key_entry.client_key(), key_entry.server_key());
+        let cpk_private_key = CompactPrivateKey::new(cpk_params);
+        let cpk = CompactPublicKey::new(&cpk_private_key);
+        let ksk_material =
+            KeySwitchingKeyBuildHelper::new((&cpk_private_key, None), (cks, sks), ks_params)
+                .key_switching_key_material;
+        let ksk_material = ksk_material.as_view();
+
+        let private_compression_key = cks.new_compression_private_key(comp_params);
+        let (compression_key, decompression_key) =
+            cks.new_compression_decompression_keys(&private_compression_key);
+
+        let msg = cks.parameters().message_modulus().0 - 1;
+
+        for _ in 0..10 {
+            let ct = cks.encrypt(msg);
+
+            let compressed = compression_key.compress_ciphertexts_into_list(&[ct]);
+
+            let decompressed = decompression_key.unpack(&compressed, 0).unwrap();
+
+            let mut re_randomizer_context = ReRandomizationContext::new(*b"TFHE_Rrd", *b"TFHE_Enc");
+            re_randomizer_context.add_ciphertext(&decompressed);
+
+            let mut seed_gen = re_randomizer_context.finalize();
+
+            let seed = seed_gen.next_seed();
+
+            let mut re_randomized = decompressed.clone();
+            re_randomized
+                .re_randomize_with_compact_public_key_encryption(&cpk, &ksk_material, seed)
+                .unwrap();
+
+            assert_ne!(decompressed, re_randomized);
+
+            let pbsed = sks.bitand(&re_randomized, &re_randomized);
+
+            let dec = cks.decrypt_message_and_carry(&pbsed);
+
+            assert_eq!(dec, msg);
+        }
     }
 }

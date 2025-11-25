@@ -1,12 +1,12 @@
-use crate::core_crypto::commons::utils::izip;
+use crate::core_crypto::commons::utils::izip_eq;
 pub use crate::core_crypto::fft_impl::fft128::math::fft::Fft128View;
-use concrete_fft::fft128::f128;
 use dyn_stack::PodStack;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use pulp::{f64x4, u64x4, x86::V3};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[cfg(feature = "nightly-avx512")]
 use pulp::{f64x8, u64x8, x86::V4};
+use tfhe_fft::fft128::f128;
 
 #[inline(always)]
 pub fn zeroing_shl(x: u64, shift: u64) -> u64 {
@@ -33,7 +33,7 @@ pub fn u128_to_f64((lo, hi): (u64, u64)) -> f64 {
     const C: f64 = (1u128 << 76) as f64;
     const D: f64 = u128::MAX as f64;
     if hi < 1 << 40 {
-        let l = f64::from_bits(A.to_bits() | (lo << 12) >> 12) - A;
+        let l = f64::from_bits(A.to_bits() | ((lo << 12) >> 12)) - A;
         let h = f64::from_bits(B.to_bits() | ((lo >> 52) | (hi << 12))) - B;
         l + h
     } else {
@@ -306,7 +306,7 @@ pub fn f64_to_u128(f: f64) -> (u64, u64) {
         (0u64, 0u64)
     } else {
         // >= 1, < max
-        let hi = 1 << 63 | f << 11;
+        let hi = (1 << 63) | (f << 11);
         let s = 1150 - (f >> 52); // Shift based on the exponent and bias.
         if s >= 128 {
             (0u64, 0u64)
@@ -322,13 +322,13 @@ pub fn f64_to_u128(f: f64) -> (u64, u64) {
 pub fn f64_to_i128(f: f64) -> (u64, u64) {
     let f = f.to_bits();
 
-    let a = f & !0 >> 1; // Remove sign bit.
+    let a = f & (!0 >> 1); // Remove sign bit.
     if a < 1023 << 52 {
         // >= 0, < 1
         (0, 0)
     } else {
         // >= 1, < max
-        let hi = 1 << 63 | a << 11;
+        let hi = (1 << 63) | (a << 11);
         let s = 1150 - (a >> 52); // Shift based on the exponent and bias.
         let u = if s >= 128 {
             (0, 0)
@@ -819,7 +819,7 @@ pub fn convert_forward_integer_avx2(
             let in_im_hi = pulp::as_arrays::<4, _>(in_im_hi).0;
 
             for (out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi) in
-                izip!(out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi)
+                izip_eq!(out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi)
             {
                 let out_re =
                     to_signed_to_f128_avx2(simd, (pulp::cast(*in_re_lo), pulp::cast(*in_re_hi)));
@@ -899,7 +899,7 @@ pub fn convert_forward_integer_avx512(
             let in_im_hi = pulp::as_arrays::<8, _>(in_im_hi).0;
 
             for (out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi) in
-                izip!(out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi)
+                izip_eq!(out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi)
             {
                 let out_re =
                     to_signed_to_f128_avx512(simd, (pulp::cast(*in_re_lo), pulp::cast(*in_re_hi)));
@@ -938,7 +938,7 @@ pub fn convert_forward_integer_scalar(
     in_im_hi: &[u64],
 ) {
     for (out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi) in
-        izip!(out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi)
+        izip_eq!(out_re0, out_re1, out_im0, out_im1, in_re_lo, in_re_hi, in_im_lo, in_im_hi)
     {
         let out_re = to_signed_to_f128((*in_re_lo, *in_re_hi));
         let out_im = to_signed_to_f128((*in_im_lo, *in_im_hi));
@@ -990,7 +990,7 @@ pub fn convert_add_backward_torus_scalar(
 ) {
     let norm = 1.0 / in_re0.len() as f64;
     for (out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1) in
-        izip!(out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1)
+        izip_eq!(out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1)
     {
         let in_re = f128(*in_re0 * norm, *in_re1 * norm);
         let in_im = f128(*in_im0 * norm, *in_im1 * norm);
@@ -1056,7 +1056,7 @@ pub fn convert_add_backward_torus_avx2(
             let in_im1 = pulp::as_arrays::<4, _>(in_im1).0;
 
             for (out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1) in
-                izip!(out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1)
+                izip_eq!(out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1)
             {
                 let in_re = (
                     simd.mul_f64x4(pulp::cast(*in_re0), norm),
@@ -1149,7 +1149,7 @@ pub fn convert_add_backward_torus_avx512(
             let in_im1 = pulp::as_arrays::<8, _>(in_im1).0;
 
             for (out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1) in
-                izip!(out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1)
+                izip_eq!(out_re_lo, out_re_hi, out_im_lo, out_im_hi, in_re0, in_re1, in_im0, in_im1)
             {
                 let in_re = (
                     simd.mul_f64x8(pulp::cast(*in_re0), norm),
@@ -1218,7 +1218,7 @@ pub fn convert_add_backward_torus(
     );
 }
 
-impl<'a> Fft128View<'a> {
+impl Fft128View<'_> {
     pub fn forward_as_integer_split(
         self,
         fourier_re0: &mut [f64],
@@ -1253,7 +1253,7 @@ impl<'a> Fft128View<'a> {
         fourier_re1: &[f64],
         fourier_im0: &[f64],
         fourier_im1: &[f64],
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
         self.backward_with_conv_split(
             standard_lo,
@@ -1308,7 +1308,7 @@ impl<'a> Fft128View<'a> {
         fourier_im0: &[f64],
         fourier_im1: &[f64],
         conv_fn: impl Fn(&mut [u64], &mut [u64], &mut [u64], &mut [u64], &[f64], &[f64], &[f64], &[f64]),
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
         let n = standard_lo.len();
         debug_assert_eq!(n, 2 * fourier_re0.len());
@@ -1316,17 +1316,16 @@ impl<'a> Fft128View<'a> {
         debug_assert_eq!(n, 2 * fourier_im0.len());
         debug_assert_eq!(n, 2 * fourier_im1.len());
 
-        let (mut tmp_re0, stack) =
+        let (tmp_re0, stack) =
             stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, fourier_re0.iter().copied());
-        let (mut tmp_re1, stack) =
+        let (tmp_re1, stack) =
             stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, fourier_re1.iter().copied());
-        let (mut tmp_im0, stack) =
+        let (tmp_im0, stack) =
             stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, fourier_im0.iter().copied());
-        let (mut tmp_im1, _) =
+        let (tmp_im1, _) =
             stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, fourier_im1.iter().copied());
 
-        self.plan
-            .inv(&mut tmp_re0, &mut tmp_re1, &mut tmp_im0, &mut tmp_im1);
+        self.plan.inv(tmp_re0, tmp_re1, tmp_im0, tmp_im1);
 
         let (standard_re_lo, standard_im_lo) = standard_lo.split_at_mut(n / 2);
         let (standard_re_hi, standard_im_hi) = standard_hi.split_at_mut(n / 2);
@@ -1335,10 +1334,10 @@ impl<'a> Fft128View<'a> {
             standard_re_hi,
             standard_im_lo,
             standard_im_hi,
-            &tmp_re0,
-            &tmp_re1,
-            &tmp_im0,
-            &tmp_im1,
+            tmp_re0,
+            tmp_re1,
+            tmp_im0,
+            tmp_im1,
         );
     }
 }

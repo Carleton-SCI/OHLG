@@ -1,20 +1,23 @@
 #include "linearalgebra/multiplication.cuh"
+#include "polynomial/dot_product.cuh"
 
 /*
  * Perform the multiplication of a u32 input LWE ciphertext vector with a u32
  * cleartext vector. See the equivalent operation on u64 data for more details.
  */
 void cuda_mult_lwe_ciphertext_vector_cleartext_vector_32(
-    void *stream, uint32_t gpu_index, void *lwe_array_out, void *lwe_array_in,
-    void *cleartext_array_in, uint32_t input_lwe_dimension,
-    uint32_t input_lwe_ciphertext_count) {
+    void *stream, uint32_t gpu_index, void *lwe_array_out,
+    void const *lwe_array_in, void const *cleartext_array_in,
+    const uint32_t input_lwe_dimension,
+    const uint32_t input_lwe_ciphertext_count) {
 
-  host_cleartext_multiplication(static_cast<cudaStream_t>(stream), gpu_index,
-                                static_cast<uint32_t *>(lwe_array_out),
-                                static_cast<uint32_t *>(lwe_array_in),
-                                static_cast<uint32_t *>(cleartext_array_in),
-                                input_lwe_dimension,
-                                input_lwe_ciphertext_count);
+  host_cleartext_vec_multiplication<uint32_t>(
+      static_cast<cudaStream_t>(stream), gpu_index,
+      static_cast<uint32_t *>(lwe_array_out),
+      static_cast<const uint32_t *>(lwe_array_in),
+      static_cast<const uint32_t *>(cleartext_array_in), input_lwe_dimension,
+      input_lwe_ciphertext_count);
+  cuda_synchronize_stream(static_cast<cudaStream_t>(stream), gpu_index);
 }
 /*
  * Perform the multiplication of a u64 input LWE ciphertext vector with a u64
@@ -45,14 +48,54 @@ void cuda_mult_lwe_ciphertext_vector_cleartext_vector_32(
  * function that performs the operation on the GPU.
  */
 void cuda_mult_lwe_ciphertext_vector_cleartext_vector_64(
-    void *stream, uint32_t gpu_index, void *lwe_array_out, void *lwe_array_in,
-    void *cleartext_array_in, uint32_t input_lwe_dimension,
-    uint32_t input_lwe_ciphertext_count) {
+    void *stream, uint32_t gpu_index, void *lwe_array_out,
+    void const *lwe_array_in, void const *cleartext_array_in,
+    const uint32_t input_lwe_dimension,
+    const uint32_t input_lwe_ciphertext_count) {
 
-  host_cleartext_multiplication(static_cast<cudaStream_t>(stream), gpu_index,
-                                static_cast<uint64_t *>(lwe_array_out),
-                                static_cast<uint64_t *>(lwe_array_in),
-                                static_cast<uint64_t *>(cleartext_array_in),
-                                input_lwe_dimension,
-                                input_lwe_ciphertext_count);
+  host_cleartext_vec_multiplication<uint64_t>(
+      static_cast<cudaStream_t>(stream), gpu_index,
+      static_cast<uint64_t *>(lwe_array_out),
+      static_cast<const uint64_t *>(lwe_array_in),
+      static_cast<const uint64_t *>(cleartext_array_in), input_lwe_dimension,
+      input_lwe_ciphertext_count);
+  cuda_synchronize_stream(static_cast<cudaStream_t>(stream), gpu_index);
+}
+
+void scratch_wrapping_polynomial_mul_one_to_many_64(void *stream,
+                                                    uint32_t gpu_index,
+                                                    uint32_t polynomial_size,
+                                                    int8_t **circulant_buf) {
+  scratch_wrapping_polynomial_mul_one_to_many<uint64_t>(
+      stream, gpu_index, polynomial_size, circulant_buf);
+}
+
+void cleanup_wrapping_polynomial_mul_one_to_many_64(void *stream,
+                                                    uint32_t gpu_index,
+                                                    int8_t *circulant_buf) {
+  cleanup_wrapping_polynomial_mul_one_to_many<uint64_t>(stream, gpu_index,
+                                                        circulant_buf);
+}
+
+void cuda_wrapping_polynomial_mul_one_to_many_64(
+    void *stream, uint32_t gpu_index, void *result, void const *poly_lhs,
+    int8_t *circulant, void const *poly_rhs, uint32_t polynomial_size,
+    uint32_t n_rhs) {
+
+  host_wrapping_polynomial_mul_one_to_many<uint64_t, ulonglong4>(
+      static_cast<cudaStream_t>(stream), gpu_index,
+      static_cast<uint64_t *>(result), static_cast<uint64_t const *>(poly_lhs),
+      circulant, static_cast<uint64_t const *>(poly_rhs), polynomial_size, 0,
+      n_rhs);
+}
+
+void cuda_glwe_wrapping_polynomial_mul_one_to_many_64(
+    void *stream, uint32_t gpu_index, void *result, void const *glwe_lhs,
+    int8_t *circulant, void const *poly_rhs, uint32_t polynomial_size,
+    uint32_t glwe_dimension, uint32_t n_rhs) {
+  host_glwe_wrapping_polynomial_mul_one_to_many<uint64_t, ulonglong4>(
+      static_cast<cudaStream_t>(stream), gpu_index,
+      static_cast<uint64_t *>(result), static_cast<uint64_t const *>(glwe_lhs),
+      circulant, static_cast<uint64_t const *>(poly_rhs), polynomial_size,
+      glwe_dimension, n_rhs);
 }

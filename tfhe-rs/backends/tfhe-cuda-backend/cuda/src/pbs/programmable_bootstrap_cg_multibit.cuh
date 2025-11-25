@@ -8,28 +8,31 @@
 #include "device.h"
 #include "fft/bnsmfft.cuh"
 #include "fft/twiddles.cuh"
+#include "pbs/pbs_multibit_utilities.h"
+#include "pbs/programmable_bootstrap.h"
 #include "polynomial/functions.cuh"
 #include "polynomial/parameters.cuh"
 #include "polynomial/polynomial_math.cuh"
 #include "programmable_bootstrap.cuh"
-#include "programmable_bootstrap.h"
 #include "programmable_bootstrap_multibit.cuh"
 #include "types/complex/operations.cuh"
 #include <vector>
 
 template <typename Torus, class params, sharedMemDegree SMD>
-__global__ void device_multi_bit_programmable_bootstrap_cg_accumulate(
-    Torus *lwe_array_out, const Torus *__restrict__ lwe_output_indexes,
-    const Torus *__restrict__ lut_vector,
-    const Torus *__restrict__ lut_vector_indexes,
-    const Torus *__restrict__ lwe_array_in,
-    const Torus *__restrict__ lwe_input_indexes,
-    const double2 *__restrict__ keybundle_array, double2 *join_buffer,
-    Torus *global_accumulator, uint32_t lwe_dimension, uint32_t glwe_dimension,
-    uint32_t polynomial_size, uint32_t base_log, uint32_t level_count,
-    uint32_t grouping_factor, uint32_t lwe_offset, uint32_t lwe_chunk_size,
-    uint32_t keybundle_size_per_input, int8_t *device_mem,
-    uint64_t device_memory_size_per_block, uint32_t gpu_offset) {
+__global__ void __launch_bounds__(params::degree / params::opt)
+    device_multi_bit_programmable_bootstrap_cg_accumulate(
+        Torus *lwe_array_out, const Torus *__restrict__ lwe_output_indexes,
+        const Torus *__restrict__ lut_vector,
+        const Torus *__restrict__ lut_vector_indexes,
+        const Torus *__restrict__ lwe_array_in,
+        const Torus *__restrict__ lwe_input_indexes,
+        const double2 *__restrict__ keybundle_array, double2 *join_buffer,
+        Torus *global_accumulator, uint32_t lwe_dimension,
+        uint32_t glwe_dimension, uint32_t polynomial_size, uint32_t base_log,
+        uint32_t level_count, uint32_t grouping_factor, uint32_t lwe_offset,
+        uint32_t lwe_chunk_size, uint32_t keybundle_size_per_input,
+        int8_t *device_mem, uint64_t device_memory_size_per_block,
+        uint32_t num_many_lut, uint32_t lut_stride) {
 
   grid_group grid = this_grid();
 
@@ -42,14 +45,14 @@ __global__ void device_multi_bit_programmable_bootstrap_cg_accumulate(
   if constexpr (SMD == FULLSM) {
     selected_memory = sharedmem;
   } else {
-    int block_index = blockIdx.x + blockIdx.y * gridDim.x +
-                      blockIdx.z * gridDim.x * gridDim.y;
+    int block_index = blockIdx.z + blockIdx.y * gridDim.z +
+                      blockIdx.x * gridDim.z * gridDim.y;
     selected_memory = &device_mem[block_index * device_memory_size_per_block];
   }
 
-  Torus *accumulator = (Torus *)selected_memory;
+  Torus *accumulator_rotated = (Torus *)selected_memory;
   double2 *accumulator_fft =
-      (double2 *)accumulator +
+      (double2 *)accumulator_rotated +
       (ptrdiff_t)(sizeof(Torus) * polynomial_size / sizeof(double2));
 
   if constexpr (SMD == PARTIALSM)
@@ -58,107 +61,139 @@ __global__ void device_multi_bit_programmable_bootstrap_cg_accumulate(
   // The third dimension of the block is used to determine on which ciphertext
   // this block is operating, in the case of batch bootstraps
   const Torus *block_lwe_array_in =
-      &lwe_array_in[lwe_input_indexes[blockIdx.z + gpu_offset] *
-                    (lwe_dimension + 1)];
+      &lwe_array_in[lwe_input_indexes[blockIdx.x] * (lwe_dimension + 1)];
 
   const Torus *block_lut_vector =
-      &lut_vector[lut_vector_indexes[blockIdx.z] * params::degree *
+      &lut_vector[lut_vector_indexes[blockIdx.x] * params::degree *
                   (glwe_dimension + 1)];
 
   double2 *block_join_buffer =
-      &join_buffer[blockIdx.z * level_count * (glwe_dimension + 1) *
+      &join_buffer[blockIdx.x * level_count * (glwe_dimension + 1) *
                    params::degree / 2];
 
-  Torus *global_slice =
-      global_accumulator +
-      (blockIdx.y + blockIdx.z * (glwe_dimension + 1)) * params::degree;
+  Torus *global_accumulator_slice =
+      &global_accumulator[(blockIdx.y + blockIdx.x * (glwe_dimension + 1)) *
+                          params::degree];
 
-  const double2 *keybundle = keybundle_array +
-                             // select the input
-                             blockIdx.z * keybundle_size_per_input;
+  const double2 *keybundle =
+      &keybundle_array[blockIdx.x * keybundle_size_per_input];
 
   if (lwe_offset == 0) {
     // Put "b" in [0, 2N[
     Torus b_hat = 0;
-    rescale_torus_element(block_lwe_array_in[lwe_dimension], b_hat,
-                          2 * params::degree);
+    modulus_switch(block_lwe_array_in[lwe_dimension], b_hat,
+                   params::log2_degree + 1);
 
     divide_by_monomial_negacyclic_inplace<Torus, params::opt,
                                           params::degree / params::opt>(
-        accumulator, &block_lut_vector[blockIdx.y * params::degree], b_hat,
-        false);
+        accumulator_rotated, &block_lut_vector[blockIdx.y * params::degree],
+        b_hat, false);
   } else {
-    // Load the accumulator calculated in previous iterations
+    // Load the accumulator_rotated calculated in previous iterations
     copy_polynomial<Torus, params::opt, params::degree / params::opt>(
-        global_slice, accumulator);
+        global_accumulator_slice, accumulator_rotated);
   }
 
   for (int i = 0; (i + lwe_offset) < lwe_dimension && i < lwe_chunk_size; i++) {
     // Perform a rounding to increase the accuracy of the
     // bootstrapped ciphertext
-    round_to_closest_multiple_inplace<Torus, params::opt,
-                                      params::degree / params::opt>(
-        accumulator, base_log, level_count);
+    init_decomposer_state_inplace<Torus, params::opt,
+                                  params::degree / params::opt>(
+        accumulator_rotated, base_log, level_count);
 
-    // Decompose the accumulator. Each block gets one level of the
+    // Decompose the accumulator_rotated. Each block gets one level of the
     // decomposition, for the mask and the body (so block 0 will have the
-    // accumulator decomposed at level 0, 1 at 1, etc.)
-    GadgetMatrix<Torus, params> gadget_acc(base_log, level_count, accumulator);
-    gadget_acc.decompose_and_compress_level(accumulator_fft, blockIdx.x);
-
-    // We are using the same memory space for accumulator_fft and
-    // accumulator_rotated, so we need to synchronize here to make sure they
-    // don't modify the same memory space at the same time
-    synchronize_threads_in_block();
+    // accumulator_rotated decomposed at level 0, 1 at 1, etc.)
+    GadgetMatrix<Torus, params> gadget_acc(base_log, level_count,
+                                           accumulator_rotated);
+    gadget_acc.decompose_and_compress_level(accumulator_fft, blockIdx.z);
+    NSMFFT_direct<HalfDegree<params>>(accumulator_fft);
+    __syncthreads();
 
     // Perform G^-1(ACC) * GGSW -> GLWE
-    mul_ggsw_glwe<Torus, grid_group, params>(
-        accumulator, accumulator_fft, block_join_buffer, keybundle,
-        polynomial_size, glwe_dimension, level_count, i, grid);
+    mul_ggsw_glwe_in_fourier_domain<grid_group, params>(
+        accumulator_fft, block_join_buffer, keybundle, i, grid);
+    NSMFFT_inverse<HalfDegree<params>>(accumulator_fft);
+    __syncthreads();
 
-    synchronize_threads_in_block();
+    add_to_torus<Torus, params>(accumulator_fft, accumulator_rotated, true);
   }
 
-  if (lwe_offset + lwe_chunk_size >= (lwe_dimension / grouping_factor)) {
-    auto block_lwe_array_out =
-        &lwe_array_out[lwe_output_indexes[blockIdx.z + gpu_offset] *
-                           (glwe_dimension * polynomial_size + 1) +
-                       blockIdx.y * polynomial_size];
+  auto accumulator = accumulator_rotated;
 
-    if (blockIdx.x == 0 && blockIdx.y < glwe_dimension) {
-      // Perform a sample extract. At this point, all blocks have the result,
-      // but we do the computation at block 0 to avoid waiting for extra blocks,
-      // in case they're not synchronized
-      sample_extract_mask<Torus, params>(block_lwe_array_out, accumulator);
-    } else if (blockIdx.x == 0 && blockIdx.y == glwe_dimension) {
-      sample_extract_body<Torus, params>(block_lwe_array_out, accumulator, 0);
+  if (blockIdx.z == 0) {
+    if (lwe_offset + lwe_chunk_size >= (lwe_dimension / grouping_factor)) {
+      auto block_lwe_array_out =
+          &lwe_array_out[lwe_output_indexes[blockIdx.x] *
+                             (glwe_dimension * polynomial_size + 1) +
+                         blockIdx.y * polynomial_size];
+
+      if (blockIdx.y < glwe_dimension) {
+        // Perform a sample extract. At this point, all blocks have the result,
+        // but we do the computation at block 0 to avoid waiting for extra
+        // blocks, in case they're not synchronized Always extract one by
+        // default
+        sample_extract_mask<Torus, params>(block_lwe_array_out, accumulator);
+
+        if (num_many_lut > 1) {
+          for (int i = 1; i < num_many_lut; i++) {
+            auto next_lwe_array_out =
+                lwe_array_out +
+                (i * gridDim.x * (glwe_dimension * polynomial_size + 1));
+            auto next_block_lwe_array_out =
+                &next_lwe_array_out[lwe_output_indexes[blockIdx.x] *
+                                        (glwe_dimension * polynomial_size + 1) +
+                                    blockIdx.y * polynomial_size];
+
+            sample_extract_mask<Torus, params>(next_block_lwe_array_out,
+                                               accumulator, 1, i * lut_stride);
+          }
+        }
+
+      } else if (blockIdx.y == glwe_dimension) {
+
+        sample_extract_body<Torus, params>(block_lwe_array_out, accumulator, 0);
+
+        if (num_many_lut > 1) {
+          for (int i = 1; i < num_many_lut; i++) {
+
+            auto next_lwe_array_out =
+                lwe_array_out +
+                (i * gridDim.x * (glwe_dimension * polynomial_size + 1));
+            auto next_block_lwe_array_out =
+                &next_lwe_array_out[lwe_output_indexes[blockIdx.x] *
+                                        (glwe_dimension * polynomial_size + 1) +
+                                    blockIdx.y * polynomial_size];
+
+            sample_extract_body<Torus, params>(next_block_lwe_array_out,
+                                               accumulator, 0, i * lut_stride);
+          }
+        }
+      }
+    } else {
+      // Load the accumulator calculated in previous iterations
+      copy_polynomial<Torus, params::opt, params::degree / params::opt>(
+          accumulator, global_accumulator_slice);
     }
-  } else {
-    // Load the accumulator calculated in previous iterations
-    copy_polynomial<Torus, params::opt, params::degree / params::opt>(
-        accumulator, global_slice);
   }
 }
 
 template <typename Torus>
-__host__ __device__ uint64_t
-get_buffer_size_partial_sm_cg_multibit_programmable_bootstrap(
+uint64_t get_buffer_size_partial_sm_cg_multibit_programmable_bootstrap(
     uint32_t polynomial_size) {
   return sizeof(Torus) * polynomial_size; // accumulator
 }
 template <typename Torus>
-__host__ __device__ uint64_t
-get_buffer_size_full_sm_cg_multibit_programmable_bootstrap(
+uint64_t get_buffer_size_full_sm_cg_multibit_programmable_bootstrap(
     uint32_t polynomial_size) {
   return sizeof(Torus) * polynomial_size * 2; // accumulator
 }
 
 template <typename Torus>
-__host__ __device__ uint64_t get_buffer_size_cg_multibit_programmable_bootstrap(
+uint64_t get_buffer_size_cg_multibit_programmable_bootstrap(
     uint32_t lwe_dimension, uint32_t glwe_dimension, uint32_t polynomial_size,
     uint32_t level_count, uint32_t input_lwe_ciphertext_count,
-    uint32_t grouping_factor, uint32_t lwe_chunk_size,
-    uint32_t max_shared_memory) {
+    uint32_t grouping_factor, uint32_t lwe_chunk_size) {
 
   uint64_t buffer_size = 0;
   buffer_size += input_lwe_ciphertext_count * lwe_chunk_size * level_count *
@@ -173,15 +208,15 @@ __host__ __device__ uint64_t get_buffer_size_cg_multibit_programmable_bootstrap(
   return buffer_size + buffer_size % sizeof(double2);
 }
 
-template <typename Torus, typename STorus, typename params>
-__host__ void scratch_cg_multi_bit_programmable_bootstrap(
+template <typename Torus, typename params>
+__host__ uint64_t scratch_cg_multi_bit_programmable_bootstrap(
     cudaStream_t stream, uint32_t gpu_index,
-    pbs_buffer<uint64_t, MULTI_BIT> **buffer, uint32_t glwe_dimension,
+    pbs_buffer<Torus, MULTI_BIT> **buffer, uint32_t glwe_dimension,
     uint32_t polynomial_size, uint32_t level_count,
-    uint32_t input_lwe_ciphertext_count, uint32_t max_shared_memory,
-    bool allocate_gpu_memory, uint32_t lwe_chunk_size = 0) {
+    uint32_t input_lwe_ciphertext_count, bool allocate_gpu_memory) {
 
-  cudaSetDevice(gpu_index);
+  cuda_set_device(gpu_index);
+
   uint64_t full_sm_keybundle =
       get_buffer_size_full_sm_multibit_programmable_bootstrap_keybundle<Torus>(
           polynomial_size);
@@ -192,6 +227,7 @@ __host__ void scratch_cg_multi_bit_programmable_bootstrap(
       get_buffer_size_partial_sm_cg_multibit_programmable_bootstrap<Torus>(
           polynomial_size);
 
+  auto max_shared_memory = cuda_get_max_shared_memory(gpu_index);
   if (max_shared_memory < full_sm_keybundle) {
     check_cuda_error(cudaFuncSetAttribute(
         device_multi_bit_programmable_bootstrap_keybundle<Torus, params, NOSM>,
@@ -244,35 +280,42 @@ __host__ void scratch_cg_multi_bit_programmable_bootstrap(
     check_cuda_error(cudaGetLastError());
   }
 
-  if (!lwe_chunk_size)
-    lwe_chunk_size =
-        get_lwe_chunk_size<Torus, params>(gpu_index, input_lwe_ciphertext_count,
-                                          polynomial_size, max_shared_memory);
-  *buffer = new pbs_buffer<uint64_t, MULTI_BIT>(
+  auto lwe_chunk_size =
+      get_lwe_chunk_size<Torus, params>(gpu_index, input_lwe_ciphertext_count,
+                                        polynomial_size, full_sm_keybundle);
+  uint64_t size_tracker = 0;
+  *buffer = new pbs_buffer<Torus, MULTI_BIT>(
       stream, gpu_index, glwe_dimension, polynomial_size, level_count,
       input_lwe_ciphertext_count, lwe_chunk_size, PBS_VARIANT::CG,
-      allocate_gpu_memory);
+      allocate_gpu_memory, size_tracker);
+  return size_tracker;
 }
 
 template <typename Torus, class params>
 __host__ void execute_cg_external_product_loop(
-    cudaStream_t stream, uint32_t gpu_index, Torus *lut_vector,
-    Torus *lut_vector_indexes, Torus *lwe_array_in, Torus *lwe_input_indexes,
-    Torus *lwe_array_out, Torus *lwe_output_indexes,
-    pbs_buffer<Torus, MULTI_BIT> *buffer, uint32_t num_samples,
-    uint32_t lwe_dimension, uint32_t glwe_dimension, uint32_t polynomial_size,
-    uint32_t grouping_factor, uint32_t base_log, uint32_t level_count,
-    uint32_t lwe_chunk_size, uint32_t max_shared_memory, int lwe_offset,
-    uint32_t gpu_offset) {
+    cudaStream_t stream, uint32_t gpu_index, Torus const *lut_vector,
+    Torus const *lut_vector_indexes, Torus const *lwe_array_in,
+    Torus const *lwe_input_indexes, Torus *lwe_array_out,
+    Torus const *lwe_output_indexes, pbs_buffer<Torus, MULTI_BIT> *buffer,
+    uint32_t num_samples, uint32_t lwe_dimension, uint32_t glwe_dimension,
+    uint32_t polynomial_size, uint32_t grouping_factor, uint32_t base_log,
+    uint32_t level_count, uint32_t lwe_offset, uint32_t num_many_lut,
+    uint32_t lut_stride) {
+  cuda_set_device(gpu_index);
 
-  cudaSetDevice(gpu_index);
-  uint64_t full_dm =
+  uint64_t full_sm =
       get_buffer_size_full_sm_cg_multibit_programmable_bootstrap<Torus>(
           polynomial_size);
-  uint64_t partial_dm =
+  uint64_t partial_sm =
       get_buffer_size_partial_sm_cg_multibit_programmable_bootstrap<Torus>(
           polynomial_size);
+
+  auto full_dm = full_sm;
+  auto partial_dm = full_sm - partial_sm;
   uint64_t no_dm = 0;
+
+  auto lwe_chunk_size = buffer->lwe_chunk_size;
+  auto max_shared_memory = cuda_get_max_shared_memory(gpu_index);
 
   uint32_t keybundle_size_per_input =
       lwe_chunk_size * level_count * (glwe_dimension + 1) *
@@ -284,9 +327,9 @@ __host__ void execute_cg_external_product_loop(
   auto d_mem = buffer->d_mem_acc_cg;
   auto keybundle_fft = buffer->keybundle_fft;
   auto global_accumulator = buffer->global_accumulator;
-  auto buffer_fft = buffer->global_accumulator_fft;
+  auto join_buffer = buffer->global_join_buffer;
 
-  void *kernel_args[21];
+  void *kernel_args[22];
   kernel_args[0] = &lwe_array_out;
   kernel_args[1] = &lwe_output_indexes;
   kernel_args[2] = &lut_vector;
@@ -294,7 +337,7 @@ __host__ void execute_cg_external_product_loop(
   kernel_args[4] = &lwe_array_in;
   kernel_args[5] = &lwe_input_indexes;
   kernel_args[6] = &keybundle_fft;
-  kernel_args[7] = &buffer_fft;
+  kernel_args[7] = &join_buffer;
   kernel_args[8] = &global_accumulator;
   kernel_args[9] = &lwe_dimension;
   kernel_args[10] = &glwe_dimension;
@@ -306,9 +349,10 @@ __host__ void execute_cg_external_product_loop(
   kernel_args[16] = &chunk_size;
   kernel_args[17] = &keybundle_size_per_input;
   kernel_args[18] = &d_mem;
-  kernel_args[20] = &gpu_offset;
+  kernel_args[20] = &num_many_lut;
+  kernel_args[21] = &lut_stride;
 
-  dim3 grid_accumulate(level_count, glwe_dimension + 1, num_samples);
+  dim3 grid_accumulate(num_samples, glwe_dimension + 1, level_count);
   dim3 thds(polynomial_size / params::opt, 1, 1);
 
   if (max_shared_memory < partial_dm) {
@@ -322,31 +366,28 @@ __host__ void execute_cg_external_product_loop(
     check_cuda_error(cudaLaunchCooperativeKernel(
         (void *)device_multi_bit_programmable_bootstrap_cg_accumulate<
             Torus, params, PARTIALSM>,
-        grid_accumulate, thds, (void **)kernel_args, partial_dm, stream));
+        grid_accumulate, thds, (void **)kernel_args, partial_sm, stream));
   } else {
     kernel_args[19] = &no_dm;
     check_cuda_error(cudaLaunchCooperativeKernel(
         (void *)device_multi_bit_programmable_bootstrap_cg_accumulate<
             Torus, params, FULLSM>,
-        grid_accumulate, thds, (void **)kernel_args, full_dm, stream));
+        grid_accumulate, thds, (void **)kernel_args, full_sm, stream));
   }
 }
 
-template <typename Torus, typename STorus, class params>
+template <typename Torus, class params>
 __host__ void host_cg_multi_bit_programmable_bootstrap(
     cudaStream_t stream, uint32_t gpu_index, Torus *lwe_array_out,
-    Torus *lwe_output_indexes, Torus *lut_vector, Torus *lut_vector_indexes,
-    Torus *lwe_array_in, Torus *lwe_input_indexes, uint64_t *bootstrapping_key,
+    Torus const *lwe_output_indexes, Torus const *lut_vector,
+    Torus const *lut_vector_indexes, Torus const *lwe_array_in,
+    Torus const *lwe_input_indexes, uint64_t const *bootstrapping_key,
     pbs_buffer<Torus, MULTI_BIT> *buffer, uint32_t glwe_dimension,
     uint32_t lwe_dimension, uint32_t polynomial_size, uint32_t grouping_factor,
     uint32_t base_log, uint32_t level_count, uint32_t num_samples,
-    uint32_t num_luts, uint32_t lwe_idx, uint32_t max_shared_memory,
-    uint32_t gpu_offset, uint32_t lwe_chunk_size = 0) {
-  cudaSetDevice(gpu_index);
+    uint32_t num_many_lut, uint32_t lut_stride) {
 
-  if (!lwe_chunk_size)
-    lwe_chunk_size = get_lwe_chunk_size<Torus, params>(
-        gpu_index, num_samples, polynomial_size, max_shared_memory);
+  auto lwe_chunk_size = buffer->lwe_chunk_size;
 
   for (uint32_t lwe_offset = 0; lwe_offset < (lwe_dimension / grouping_factor);
        lwe_offset += lwe_chunk_size) {
@@ -355,16 +396,15 @@ __host__ void host_cg_multi_bit_programmable_bootstrap(
     execute_compute_keybundle<Torus, params>(
         stream, gpu_index, lwe_array_in, lwe_input_indexes, bootstrapping_key,
         buffer, num_samples, lwe_dimension, glwe_dimension, polynomial_size,
-        grouping_factor, base_log, level_count, max_shared_memory,
-        lwe_chunk_size, lwe_offset, gpu_offset);
+        grouping_factor, level_count, lwe_offset);
 
     // Accumulate
     execute_cg_external_product_loop<Torus, params>(
         stream, gpu_index, lut_vector, lut_vector_indexes, lwe_array_in,
         lwe_input_indexes, lwe_array_out, lwe_output_indexes, buffer,
         num_samples, lwe_dimension, glwe_dimension, polynomial_size,
-        grouping_factor, base_log, level_count, lwe_chunk_size,
-        max_shared_memory, lwe_offset, gpu_offset);
+        grouping_factor, base_log, level_count, lwe_offset, num_many_lut,
+        lut_stride);
   }
 }
 
@@ -399,17 +439,35 @@ __host__ bool verify_cuda_programmable_bootstrap_cg_multi_bit_grid_size(
             Torus, params, NOSM>,
         thds, 0);
   } else if (max_shared_memory < full_sm_cg_accumulate) {
+    check_cuda_error(cudaFuncSetAttribute(
+        device_multi_bit_programmable_bootstrap_cg_accumulate<Torus, params,
+                                                              PARTIALSM>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, partial_sm_cg_accumulate));
+    cudaFuncSetCacheConfig(
+        device_multi_bit_programmable_bootstrap_cg_accumulate<Torus, params,
+                                                              PARTIALSM>,
+        cudaFuncCachePreferShared);
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &max_active_blocks_per_sm,
         (void *)device_multi_bit_programmable_bootstrap_cg_accumulate<
             Torus, params, PARTIALSM>,
         thds, partial_sm_cg_accumulate);
+    check_cuda_error(cudaGetLastError());
   } else {
+    check_cuda_error(cudaFuncSetAttribute(
+        device_multi_bit_programmable_bootstrap_cg_accumulate<Torus, params,
+                                                              FULLSM>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize, full_sm_cg_accumulate));
+    cudaFuncSetCacheConfig(
+        device_multi_bit_programmable_bootstrap_cg_accumulate<Torus, params,
+                                                              FULLSM>,
+        cudaFuncCachePreferShared);
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &max_active_blocks_per_sm,
         (void *)device_multi_bit_programmable_bootstrap_cg_accumulate<
             Torus, params, FULLSM>,
         thds, full_sm_cg_accumulate);
+    check_cuda_error(cudaGetLastError());
   }
 
   // Get the number of streaming multiprocessors

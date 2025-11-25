@@ -8,31 +8,24 @@
 
 #include "crypto/keyswitch.cuh"
 #include "device.h"
-#include "integer.h"
 #include "integer/integer.cuh"
-#include "linear_algebra.h"
-#include "programmable_bootstrap.h"
-#include "utils/helper.cuh"
+#include "integer/integer_utilities.h"
 #include "utils/kernel_dimensions.cuh"
-#include <fstream>
 #include <iostream>
-#include <omp.h>
 #include <sstream>
 #include <string>
 #include <vector>
 
 template <typename Torus>
-__global__ void
-device_integer_radix_negation(Torus *output, Torus *input, int32_t num_blocks,
-                              uint64_t lwe_dimension, uint64_t message_modulus,
-                              uint64_t carry_modulus, uint64_t delta) {
+__global__ void device_negation(Torus *output, Torus const *input,
+                                int32_t num_blocks, uint64_t lwe_dimension,
+                                uint64_t message_modulus, uint64_t delta) {
   int tid = blockIdx.x * blockDim.x + threadIdx.x;
   if (tid < lwe_dimension + 1) {
     bool is_body = (tid == lwe_dimension);
 
     // z = ceil( degree / 2^p ) * 2^p
     uint64_t z = (2 * message_modulus - 1) / message_modulus;
-    __syncthreads();
     z *= message_modulus;
 
     // (0,Delta*z) - ct
@@ -47,25 +40,31 @@ device_integer_radix_negation(Torus *output, Torus *input, int32_t num_blocks,
 
       uint64_t encoded_zb = zb * delta;
 
-      __syncthreads();
-
       // (0,Delta*z) - ct
       output[tid] =
           (is_body ? z * delta - (input[tid] + encoded_zb) : -input[tid]);
-      __syncthreads();
     }
   }
 }
 
 template <typename Torus>
-__host__ void
-host_integer_radix_negation(cudaStream_t *streams, uint32_t *gpu_indexes,
-                            uint32_t gpu_count, Torus *output, Torus *input,
-                            uint32_t lwe_dimension,
-                            uint32_t input_lwe_ciphertext_count,
-                            uint64_t message_modulus, uint64_t carry_modulus) {
-  cudaSetDevice(gpu_indexes[0]);
+__host__ void host_negation(CudaStreams streams,
+                            CudaRadixCiphertextFFI *lwe_array_out,
+                            CudaRadixCiphertextFFI const *lwe_array_in,
+                            uint64_t message_modulus, uint64_t carry_modulus,
+                            uint32_t num_radix_blocks) {
+  cuda_set_device(streams.gpu_index(0));
 
+  if (lwe_array_out->num_radix_blocks < num_radix_blocks ||
+      lwe_array_in->num_radix_blocks < num_radix_blocks)
+    PANIC("Cuda error: lwe_array_in and lwe_array_out num radix blocks must be "
+          "greater or equal to the number of blocks to negate")
+
+  if (lwe_array_out->lwe_dimension != lwe_array_in->lwe_dimension)
+    PANIC("Cuda error: lwe_array_in and lwe_array_out lwe_dimension must be "
+          "the same")
+
+  auto lwe_dimension = lwe_array_out->lwe_dimension;
   // lwe_size includes the presence of the body
   // whereas lwe_dimension is the number of elements in the mask
   int lwe_size = lwe_dimension + 1;
@@ -75,47 +74,36 @@ host_integer_radix_negation(cudaStream_t *streams, uint32_t *gpu_indexes,
   getNumBlocksAndThreads(num_entries, 512, num_blocks, num_threads);
   dim3 grid(num_blocks, 1, 1);
   dim3 thds(num_threads, 1, 1);
-  uint64_t shared_mem = input_lwe_ciphertext_count * sizeof(uint32_t);
 
   // Value of the shift we multiply our messages by
   // If message_modulus and carry_modulus are always powers of 2 we can simplify
   // this
   uint64_t delta = ((uint64_t)1 << 63) / (message_modulus * carry_modulus);
 
-  device_integer_radix_negation<<<grid, thds, shared_mem, streams[0]>>>(
-      output, input, input_lwe_ciphertext_count, lwe_dimension, message_modulus,
-      carry_modulus, delta);
+  device_negation<Torus><<<grid, thds, 0, streams.stream(0)>>>(
+      static_cast<Torus *>(lwe_array_out->ptr),
+      static_cast<Torus *>(lwe_array_in->ptr), num_radix_blocks, lwe_dimension,
+      message_modulus, delta);
   check_cuda_error(cudaGetLastError());
-}
 
-template <typename Torus>
-__host__ void scratch_cuda_integer_overflowing_sub_kb(
-    cudaStream_t *streams, uint32_t *gpu_indexes, uint32_t gpu_count,
-    int_overflowing_sub_memory<Torus> **mem_ptr, uint32_t num_blocks,
-    int_radix_params params, bool allocate_gpu_memory) {
+  uint8_t zb = 0;
+  for (uint i = 0; i < lwe_array_out->num_radix_blocks; i++) {
+    auto input_degree = lwe_array_in->degrees[i];
 
-  *mem_ptr = new int_overflowing_sub_memory<Torus>(
-      streams, gpu_indexes, gpu_count, params, num_blocks, allocate_gpu_memory);
-}
+    if (zb != 0) {
+      input_degree += static_cast<uint64_t>(zb);
+    }
+    Torus z =
+        std::max(static_cast<Torus>(1),
+                 static_cast<Torus>(ceil(input_degree / message_modulus))) *
+        message_modulus;
 
-template <typename Torus>
-__host__ void host_integer_overflowing_sub_kb(
-    cudaStream_t *streams, uint32_t *gpu_indexes, uint32_t gpu_count,
-    Torus *radix_lwe_out, Torus *radix_lwe_overflowed, Torus *radix_lwe_left,
-    Torus *radix_lwe_right, void **bsks, uint64_t **ksks,
-    int_overflowing_sub_memory<uint64_t> *mem_ptr, uint32_t num_blocks) {
-
-  auto radix_params = mem_ptr->params;
-
-  host_unchecked_sub_with_correcting_term(
-      streams[0], gpu_indexes[0], radix_lwe_out, radix_lwe_left,
-      radix_lwe_right, radix_params.big_lwe_dimension, num_blocks,
-      radix_params.message_modulus, radix_params.carry_modulus,
-      radix_params.message_modulus - 1);
-
-  host_propagate_single_sub_borrow<Torus>(streams, gpu_indexes, gpu_count,
-                                          radix_lwe_overflowed, radix_lwe_out,
-                                          mem_ptr, bsks, ksks, num_blocks);
+    lwe_array_out->degrees[i] = z - static_cast<uint64_t>(zb);
+    lwe_array_out->noise_levels[i] = lwe_array_in->noise_levels[i];
+    CHECK_NOISE_LEVEL(lwe_array_out->noise_levels[i], message_modulus,
+                      carry_modulus);
+    zb = z / message_modulus;
+  }
 }
 
 #endif

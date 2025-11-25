@@ -63,6 +63,24 @@ impl<const N: usize> StaticSignedBigInt<N> {
         self - other
     }
 
+    /// Replaces the current value by interpreting the bytes in big endian order
+    pub fn copy_from_be_byte_slice(&mut self, bytes: &[u8]) {
+        super::algorithms::copy_from_be_byte_slice(self.0.as_mut_slice(), bytes);
+    }
+
+    /// Replaces the current value by interpreting the bytes in little endian order
+    pub fn copy_from_le_byte_slice(&mut self, bytes: &[u8]) {
+        super::algorithms::copy_from_le_byte_slice(self.0.as_mut_slice(), bytes);
+    }
+
+    pub fn copy_to_le_byte_slice(&self, bytes: &mut [u8]) {
+        super::algorithms::copy_to_le_byte_slice(self.0.as_slice(), bytes);
+    }
+
+    pub fn copy_to_be_byte_slice(&self, bytes: &mut [u8]) {
+        super::algorithms::copy_to_be_byte_slice(self.0.as_slice(), bytes);
+    }
+
     pub fn is_power_of_two(self) -> bool {
         if self <= Self::ZERO {
             return false;
@@ -115,7 +133,7 @@ impl<const N: usize> std::ops::Add<Self> for StaticSignedBigInt<N> {
 
 impl<const N: usize> std::ops::AddAssign<Self> for StaticSignedBigInt<N> {
     fn add_assign(&mut self, rhs: Self) {
-        super::algorithms::add_assign_words(self.0.as_mut_slice(), rhs.0.as_slice());
+        super::algorithms::wrapping_add_assign_words(self.0.as_mut_slice(), rhs.0.as_slice());
     }
 }
 
@@ -404,6 +422,7 @@ impl<const N: usize> From<(u64, u64, u64, u64)> for StaticSignedBigInt<N> {
 }
 
 impl<const N: usize> CastFrom<Self> for StaticSignedBigInt<N> {
+    #[inline(always)]
     fn cast_from(input: Self) -> Self {
         input
     }
@@ -441,6 +460,23 @@ impl<const N: usize> CastFrom<u64> for StaticSignedBigInt<N> {
     }
 }
 
+impl<const N: usize> CastFrom<u128> for StaticSignedBigInt<N> {
+    fn cast_from(input: u128) -> Self {
+        let mut converted = [u64::ZERO; N];
+        if N == 0 {
+            return Self(converted);
+        }
+
+        converted[0] = input as u64;
+        if N == 1 {
+            return Self(converted);
+        }
+
+        converted[1] = (input >> 64) as u64;
+        Self(converted)
+    }
+}
+
 impl<const N: usize> CastFrom<StaticSignedBigInt<N>> for u8 {
     fn cast_from(input: StaticSignedBigInt<N>) -> Self {
         input.0[0] as Self
@@ -462,6 +498,13 @@ impl<const N: usize> CastFrom<StaticSignedBigInt<N>> for u32 {
 impl<const N: usize> CastFrom<StaticSignedBigInt<N>> for u64 {
     fn cast_from(input: StaticSignedBigInt<N>) -> Self {
         input.0[0]
+    }
+}
+
+impl<const N: usize> CastFrom<StaticSignedBigInt<N>> for u128 {
+    fn cast_from(input: StaticSignedBigInt<N>) -> Self {
+        let inner = &input.0;
+        inner[0] as Self | ((inner[1] as Self) << 64)
     }
 }
 

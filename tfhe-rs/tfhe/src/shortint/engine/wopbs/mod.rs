@@ -1,31 +1,38 @@
 //! # WARNING: this module is experimental.
 use crate::core_crypto::algorithms::*;
 use crate::core_crypto::entities::*;
+use crate::shortint::atomic_pattern::StandardAtomicPatternServerKey;
 use crate::shortint::ciphertext::{MaxDegree, MaxNoiseLevel};
-use crate::shortint::engine::{EngineResult, ShortintEngine};
-use crate::shortint::server_key::ShortintBootstrappingKey;
+use crate::shortint::client_key::StandardClientKeyView;
+use crate::shortint::engine::ShortintEngine;
+use crate::shortint::server_key::{
+    ModulusSwitchConfiguration, ShortintBootstrappingKey, StandardServerKey, StandardServerKeyView,
+};
 use crate::shortint::wopbs::{WopbsKey, WopbsKeyCreationError};
-use crate::shortint::{ClientKey, ServerKey, WopbsParameters};
+use crate::shortint::WopbsParameters;
 
 impl ShortintEngine {
     // Creates a key when ONLY a wopbs is used.
     pub(crate) fn new_wopbs_key_only_for_wopbs(
         &mut self,
-        cks: &ClientKey,
-        sks: &ServerKey,
-    ) -> EngineResult<WopbsKey> {
+        cks: StandardClientKeyView<'_>,
+        sks: StandardServerKeyView<'_>,
+    ) -> crate::Result<WopbsKey> {
         if matches!(
-            sks.bootstrapping_key,
+            sks.atomic_pattern.bootstrapping_key,
             ShortintBootstrappingKey::MultiBit { .. }
         ) {
-            return Err(WopbsKeyCreationError::UnsupportedMultiBit.into());
+            return Err(crate::Error::new(format!(
+                "{}",
+                WopbsKeyCreationError::UnsupportedMultiBit
+            )));
         }
 
-        let wop_params = cks.parameters.wopbs_parameters().unwrap();
+        let wop_params = cks.parameters().wopbs_parameters().unwrap();
 
         let cbs_pfpksk = par_allocate_and_generate_new_circuit_bootstrap_lwe_pfpksk_list(
-            &cks.large_lwe_secret_key(),
-            &cks.glwe_secret_key,
+            &cks.atomic_pattern.large_lwe_secret_key(),
+            &cks.atomic_pattern.glwe_secret_key,
             wop_params.pfks_base_log,
             wop_params.pfks_level,
             wop_params.pfks_noise_distribution,
@@ -33,12 +40,12 @@ impl ShortintEngine {
             &mut self.encryption_generator,
         );
 
-        let sks_cpy = sks.clone();
+        let sks_cpy = sks.owned();
 
         let wopbs_key = WopbsKey {
             wopbs_server_key: sks_cpy.clone(),
             cbs_pfpksk,
-            ksk_pbs_to_wopbs: sks.key_switching_key.clone(),
+            ksk_pbs_to_wopbs: sks.atomic_pattern.key_switching_key.clone(),
             param: wop_params,
             pbs_server_key: sks_cpy,
         };
@@ -48,8 +55,8 @@ impl ShortintEngine {
     //Creates a new WoPBS key.
     pub(crate) fn new_wopbs_key(
         &mut self,
-        cks: &ClientKey,
-        sks: &ServerKey,
+        cks: StandardClientKeyView<'_>,
+        sks: StandardServerKeyView<'_>,
         parameters: &WopbsParameters,
     ) -> WopbsKey {
         //Independent client key generation dedicated to the WoPBS
@@ -103,10 +110,10 @@ impl ShortintEngine {
 
         // KSK to convert from input ciphertext key to the wopbs input one
         let ksk_pbs_large_to_wopbs_large = allocate_and_generate_new_lwe_keyswitch_key(
-            &cks.large_lwe_secret_key(),
+            &cks.atomic_pattern.large_lwe_secret_key(),
             &large_lwe_secret_key,
-            cks.parameters.ks_base_log(),
-            cks.parameters.ks_level(),
+            cks.parameters().ks_base_log(),
+            cks.parameters().ks_level(),
             parameters.lwe_noise_distribution,
             parameters.ciphertext_modulus,
             &mut self.encryption_generator,
@@ -116,10 +123,10 @@ impl ShortintEngine {
         // classical PBS. This allows compatibility between PBS and WoPBS
         let ksk_wopbs_large_to_pbs_small = allocate_and_generate_new_lwe_keyswitch_key(
             &large_lwe_secret_key,
-            &cks.small_lwe_secret_key(),
-            cks.parameters.ks_base_log(),
-            cks.parameters.ks_level(),
-            cks.parameters.lwe_noise_distribution(),
+            &cks.atomic_pattern.small_lwe_secret_key(),
+            cks.parameters().ks_base_log(),
+            cks.parameters().ks_level(),
+            cks.parameters().lwe_noise_distribution(),
             parameters.ciphertext_modulus,
             &mut self.encryption_generator,
         );
@@ -139,9 +146,17 @@ impl ShortintEngine {
             parameters.carry_modulus,
         );
 
-        let wopbs_server_key = ServerKey {
+        let wopbs_atomic_pattern = StandardAtomicPatternServerKey {
             key_switching_key: ksk_wopbs_large_to_wopbs_small,
-            bootstrapping_key: ShortintBootstrappingKey::Classic(small_bsk),
+            bootstrapping_key: ShortintBootstrappingKey::Classic {
+                bsk: small_bsk,
+                modulus_switch_noise_reduction_key: ModulusSwitchConfiguration::Standard,
+            },
+            pbs_order: cks.parameters().encryption_key_choice().into(),
+        };
+
+        let wopbs_server_key = StandardServerKey {
+            atomic_pattern: wopbs_atomic_pattern,
             message_modulus: parameters.message_modulus,
             carry_modulus: parameters.carry_modulus,
             max_degree: MaxDegree::from_msg_carry_modulus(
@@ -150,26 +165,29 @@ impl ShortintEngine {
             ),
             max_noise_level: max_noise_level_wopbs,
             ciphertext_modulus: parameters.ciphertext_modulus,
-            pbs_order: cks.parameters.encryption_key_choice().into(),
         };
 
         let max_noise_level_pbs = MaxNoiseLevel::from_msg_carry_modulus(
-            cks.parameters.message_modulus(),
-            cks.parameters.carry_modulus(),
+            cks.parameters().message_modulus(),
+            cks.parameters().carry_modulus(),
         );
 
-        let pbs_server_key = ServerKey {
+        let pbs_atomic_pattern = StandardAtomicPatternServerKey {
             key_switching_key: ksk_wopbs_large_to_pbs_small,
-            bootstrapping_key: sks.bootstrapping_key.clone(),
-            message_modulus: cks.parameters.message_modulus(),
-            carry_modulus: cks.parameters.carry_modulus(),
+            bootstrapping_key: sks.atomic_pattern.bootstrapping_key.clone(),
+            pbs_order: cks.parameters().encryption_key_choice().into(),
+        };
+
+        let pbs_server_key = StandardServerKey {
+            atomic_pattern: pbs_atomic_pattern,
+            message_modulus: cks.parameters().message_modulus(),
+            carry_modulus: cks.parameters().carry_modulus(),
             max_degree: MaxDegree::from_msg_carry_modulus(
-                cks.parameters.message_modulus(),
-                cks.parameters.carry_modulus(),
+                cks.parameters().message_modulus(),
+                cks.parameters().carry_modulus(),
             ),
             max_noise_level: max_noise_level_pbs,
-            ciphertext_modulus: cks.parameters.ciphertext_modulus(),
-            pbs_order: cks.parameters.encryption_key_choice().into(),
+            ciphertext_modulus: cks.parameters().ciphertext_modulus(),
         };
 
         WopbsKey {

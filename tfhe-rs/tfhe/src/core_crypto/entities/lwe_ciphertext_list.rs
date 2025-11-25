@@ -257,6 +257,41 @@ impl<Scalar: UnsignedInteger> LweCiphertextListOwned<Scalar> {
         )
     }
 
+    pub fn new_from_lwe_ciphertext_iterator<'a, LweIter>(iter: LweIter) -> crate::Result<Self>
+    where
+        LweIter: IntoIterator<Item = LweCiphertextView<'a, Scalar>>,
+    {
+        let mut iter = iter.into_iter();
+
+        let Some(first) = iter.next() else {
+            return Err(crate::Error::new(
+                "Empty iterator while trying to create an LweCiphertextList".to_string(),
+            ));
+        };
+
+        let ref_lwe_size = first.lwe_size();
+        let ref_ciphertext_modulus = first.ciphertext_modulus();
+
+        let mut container = first.as_ref().to_vec();
+
+        for lwe in iter {
+            if lwe.lwe_size() == ref_lwe_size && lwe.ciphertext_modulus() == ref_ciphertext_modulus
+            {
+                container.extend_from_slice(lwe.as_ref());
+            } else {
+                return Err(crate::Error::new(
+                    "Mismatched LweCiphertextMetadata".to_string(),
+                ));
+            }
+        }
+
+        Ok(Self::from_container(
+            container,
+            ref_lwe_size,
+            ref_ciphertext_modulus,
+        ))
+    }
+
     /// Allocate memory and create a new owned [`LweCiphertextList`], where each element
     /// is provided by the `fill_with` function, invoked for each consecutive index.
     ///
@@ -315,13 +350,15 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 
     type EntityViewMetadata = LweCiphertextCreationMetadata<Self::Element>;
 
-    type EntityView<'this> = LweCiphertextView<'this, Self::Element>
+    type EntityView<'this>
+        = LweCiphertextView<'this, Self::Element>
     where
         Self: 'this;
 
     type SelfViewMetadata = LweCiphertextListCreationMetadata<Self::Element>;
 
-    type SelfView<'this> = LweCiphertextListView<'this, Self::Element>
+    type SelfView<'this>
+        = LweCiphertextListView<'this, Self::Element>
     where
         Self: 'this;
 
@@ -346,11 +383,13 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 impl<Scalar: UnsignedInteger, C: ContainerMut<Element = Scalar>> ContiguousEntityContainerMut
     for LweCiphertextList<C>
 {
-    type EntityMutView<'this> = LweCiphertextMutView<'this, Self::Element>
+    type EntityMutView<'this>
+        = LweCiphertextMutView<'this, Self::Element>
     where
         Self: 'this;
 
-    type SelfMutView<'this> = LweCiphertextListMutView<'this, Self::Element>
+    type SelfMutView<'this>
+        = LweCiphertextListMutView<'this, Self::Element>
     where
         Self: 'this;
 }

@@ -12,10 +12,11 @@
 #include "device.h"
 #include "fft/bnsmfft.cuh"
 #include "fft/twiddles.cuh"
+#include "pbs/pbs_utilities.h"
+#include "pbs/programmable_bootstrap.h"
 #include "polynomial/parameters.cuh"
 #include "polynomial/polynomial_math.cuh"
 #include "programmable_bootstrap.cuh"
-#include "programmable_bootstrap.h"
 #include "types/complex/operations.cuh"
 
 using namespace cooperative_groups;
@@ -45,7 +46,8 @@ __global__ void device_programmable_bootstrap_tbc(
     uint32_t lwe_dimension, uint32_t polynomial_size, uint32_t base_log,
     uint32_t level_count, int8_t *device_mem,
     uint64_t device_memory_size_per_block, bool support_dsm,
-    uint32_t gpu_offset) {
+    uint32_t num_many_lut, uint32_t lut_stride,
+    PBS_MS_REDUCTION_T noise_reduction_type) {
 
   cluster_group cluster = this_cluster();
 
@@ -61,8 +63,8 @@ __global__ void device_programmable_bootstrap_tbc(
     if (support_dsm)
       selected_memory += sizeof(Torus) * polynomial_size;
   } else {
-    int block_index = blockIdx.x + blockIdx.y * gridDim.x +
-                      blockIdx.z * gridDim.x * gridDim.y;
+    int block_index = blockIdx.z + blockIdx.y * gridDim.z +
+                      blockIdx.x * gridDim.z * gridDim.y;
     selected_memory = &device_mem[block_index * device_memory_size_per_block];
   }
 
@@ -82,24 +84,29 @@ __global__ void device_programmable_bootstrap_tbc(
   // The third dimension of the block is used to determine on which ciphertext
   // this block is operating, in the case of batch bootstraps
   const Torus *block_lwe_array_in =
-      &lwe_array_in[lwe_input_indexes[blockIdx.z + gpu_offset] *
-                    (lwe_dimension + 1)];
+      &lwe_array_in[lwe_input_indexes[blockIdx.x] * (lwe_dimension + 1)];
 
   const Torus *block_lut_vector =
-      &lut_vector[lut_vector_indexes[blockIdx.z] * params::degree *
+      &lut_vector[lut_vector_indexes[blockIdx.x] * params::degree *
                   (glwe_dimension + 1)];
 
   double2 *block_join_buffer =
-      &join_buffer[blockIdx.z * level_count * (glwe_dimension + 1) *
+      &join_buffer[blockIdx.x * level_count * (glwe_dimension + 1) *
                    params::degree / 2];
   // Since the space is L1 cache is small, we use the same memory location for
   // the rotated accumulator and the fft accumulator, since we know that the
   // rotated array is not in use anymore by the time we perform the fft
 
   // Put "b" in [0, 2N[
+  constexpr auto log_modulus = params::log2_degree + 1;
   Torus b_hat = 0;
-  rescale_torus_element(block_lwe_array_in[lwe_dimension], b_hat,
-                        2 * params::degree);
+  Torus correction = 0;
+  if (noise_reduction_type == PBS_MS_REDUCTION_T::CENTERED) {
+    correction = centered_binary_modulus_switch_body_correction_to_add(
+        block_lwe_array_in, lwe_dimension, log_modulus);
+  }
+  modulus_switch(block_lwe_array_in[lwe_dimension] + correction, b_hat,
+                 log_modulus);
 
   divide_by_monomial_negacyclic_inplace<Torus, params::opt,
                                         params::degree / params::opt>(
@@ -107,12 +114,11 @@ __global__ void device_programmable_bootstrap_tbc(
       false);
 
   for (int i = 0; i < lwe_dimension; i++) {
-    synchronize_threads_in_block();
+    __syncthreads();
 
     // Put "a" in [0, 2N[
     Torus a_hat = 0;
-    rescale_torus_element(block_lwe_array_in[i], a_hat,
-                          2 * params::degree); // 2 * params::log2_degree + 1);
+    modulus_switch(block_lwe_array_in[i], a_hat, log_modulus);
 
     // Perform ACC * (X^ä - 1)
     multiply_by_monomial_negacyclic_and_sub_polynomial<
@@ -121,56 +127,272 @@ __global__ void device_programmable_bootstrap_tbc(
 
     // Perform a rounding to increase the accuracy of the
     // bootstrapped ciphertext
-    round_to_closest_multiple_inplace<Torus, params::opt,
-                                      params::degree / params::opt>(
+    init_decomposer_state_inplace<Torus, params::opt,
+                                  params::degree / params::opt>(
         accumulator_rotated, base_log, level_count);
 
-    synchronize_threads_in_block();
+    __syncthreads();
 
     // Decompose the accumulator. Each block gets one level of the
     // decomposition, for the mask and the body (so block 0 will have the
     // accumulator decomposed at level 0, 1 at 1, etc.)
     GadgetMatrix<Torus, params> gadget_acc(base_log, level_count,
                                            accumulator_rotated);
-    gadget_acc.decompose_and_compress_level(accumulator_fft, blockIdx.x);
-
-    // We are using the same memory space for accumulator_fft and
-    // accumulator_rotated, so we need to synchronize here to make sure they
-    // don't modify the same memory space at the same time
-    synchronize_threads_in_block();
+    gadget_acc.decompose_and_compress_level(accumulator_fft, blockIdx.z);
+    NSMFFT_direct<HalfDegree<params>>(accumulator_fft);
+    __syncthreads();
 
     // Perform G^-1(ACC) * GGSW -> GLWE
-    mul_ggsw_glwe<Torus, cluster_group, params>(
-        accumulator, accumulator_fft, block_join_buffer, bootstrapping_key,
-        polynomial_size, glwe_dimension, level_count, i, cluster, support_dsm);
+    mul_ggsw_glwe_in_fourier_domain<cluster_group, params>(
+        accumulator_fft, block_join_buffer, bootstrapping_key, i, cluster,
+        support_dsm);
+    NSMFFT_inverse<HalfDegree<params>>(accumulator_fft);
+    __syncthreads();
 
-    synchronize_threads_in_block();
+    add_to_torus<Torus, params>(accumulator_fft, accumulator);
   }
 
   auto block_lwe_array_out =
-      &lwe_array_out[lwe_output_indexes[blockIdx.z + gpu_offset] *
+      &lwe_array_out[lwe_output_indexes[blockIdx.x] *
                          (glwe_dimension * polynomial_size + 1) +
                      blockIdx.y * polynomial_size];
 
-  if (blockIdx.x == 0 && blockIdx.y < glwe_dimension) {
-    // Perform a sample extract. At this point, all blocks have the result, but
-    // we do the computation at block 0 to avoid waiting for extra blocks, in
-    // case they're not synchronized
-    sample_extract_mask<Torus, params>(block_lwe_array_out, accumulator);
-  } else if (blockIdx.x == 0 && blockIdx.y == glwe_dimension) {
-    sample_extract_body<Torus, params>(block_lwe_array_out, accumulator, 0);
+  if (blockIdx.z == 0) {
+    if (blockIdx.y < glwe_dimension) {
+      // Perform a sample extract. At this point, all blocks have the result,
+      // but we do the computation at block 0 to avoid waiting for extra blocks,
+      // in case they're not synchronized
+      sample_extract_mask<Torus, params>(block_lwe_array_out, accumulator);
+
+      if (num_many_lut > 1) {
+        for (int i = 1; i < num_many_lut; i++) {
+          auto next_lwe_array_out =
+              lwe_array_out +
+              (i * gridDim.x * (glwe_dimension * polynomial_size + 1));
+          auto next_block_lwe_array_out =
+              &next_lwe_array_out[lwe_output_indexes[blockIdx.x] *
+                                      (glwe_dimension * polynomial_size + 1) +
+                                  blockIdx.y * polynomial_size];
+
+          sample_extract_mask<Torus, params>(next_block_lwe_array_out,
+                                             accumulator, 1, i * lut_stride);
+        }
+      }
+    } else if (blockIdx.y == glwe_dimension) {
+      sample_extract_body<Torus, params>(block_lwe_array_out, accumulator, 0);
+
+      if (num_many_lut > 1) {
+        for (int i = 1; i < num_many_lut; i++) {
+
+          auto next_lwe_array_out =
+              lwe_array_out +
+              (i * gridDim.x * (glwe_dimension * polynomial_size + 1));
+          auto next_block_lwe_array_out =
+              &next_lwe_array_out[lwe_output_indexes[blockIdx.x] *
+                                      (glwe_dimension * polynomial_size + 1) +
+                                  blockIdx.y * polynomial_size];
+
+          sample_extract_body<Torus, params>(next_block_lwe_array_out,
+                                             accumulator, 0, i * lut_stride);
+        }
+      }
+    }
   }
 }
 
-template <typename Torus, typename STorus, typename params>
-__host__ void scratch_programmable_bootstrap_tbc(
-    cudaStream_t stream, uint32_t gpu_index,
-    pbs_buffer<Torus, CLASSICAL> **buffer, uint32_t glwe_dimension,
-    uint32_t polynomial_size, uint32_t level_count,
-    uint32_t input_lwe_ciphertext_count, uint32_t max_shared_memory,
-    bool allocate_gpu_memory) {
-  cudaSetDevice(gpu_index);
+template <typename Torus, class params, sharedMemDegree SMD>
+__global__ void device_programmable_bootstrap_tbc_2_2_params(
+    Torus *lwe_array_out, const Torus *__restrict__ lwe_output_indexes,
+    const Torus *__restrict__ lut_vector,
+    const Torus *__restrict__ lut_vector_indexes,
+    const Torus *__restrict__ lwe_array_in,
+    const Torus *__restrict__ lwe_input_indexes,
+    const double2 *__restrict__ bootstrapping_key, double2 *join_buffer,
+    uint32_t lwe_dimension, uint32_t num_many_lut, uint32_t lut_stride,
+    PBS_MS_REDUCTION_T noise_reduction_type) {
 
+  constexpr uint32_t level_count = 1;
+  constexpr uint32_t polynomial_size = 2048;
+  constexpr uint32_t glwe_dimension = 1;
+  constexpr uint32_t base_log = 23;
+  constexpr bool support_dsm = true;
+  cluster_group cluster = this_cluster();
+  auto this_block_rank = cluster.block_index().y;
+
+  // We use shared memory for the polynomials that are used often during the
+  // bootstrap, since shared memory is kept in L1 cache and accessing it is
+  // much faster than global memory
+  extern __shared__ int8_t sharedmem[];
+  int8_t *selected_memory;
+
+  // When using 2_2 params and tbc we know everything fits in shared memory
+  // The first (polynomial_size/2) * sizeof(double2) bytes are reserved for
+  // external product using distributed shared memory
+  selected_memory = sharedmem;
+  // We know that dsm is supported and we have enough memory
+  constexpr uint32_t num_buffers_ping_pong = 4;
+  selected_memory += sizeof(Torus) * polynomial_size * num_buffers_ping_pong;
+
+  double2 *accumulator_ping = (double2 *)sharedmem;
+  double2 *accumulator_pong = accumulator_ping + (polynomial_size / 2);
+  double2 *shared_twiddles = accumulator_pong + (polynomial_size / 2);
+  double2 *shared_fft = shared_twiddles + (polynomial_size / 2);
+
+  Torus *accumulator = (Torus *)selected_memory;
+
+  // Copying the twiddles from global to shared for extra performance
+  for (int k = 0; k < params::opt / 2; k++) {
+    shared_twiddles[threadIdx.x + k * (params::degree / params::opt)] =
+        negtwiddles[threadIdx.x + k * (params::degree / params::opt)];
+  }
+  // The third dimension of the block is used to determine on which ciphertext
+  // this block is operating, in the case of batch bootstraps
+  const Torus *block_lwe_array_in =
+      &lwe_array_in[lwe_input_indexes[blockIdx.x] * (lwe_dimension + 1)];
+
+  const Torus *block_lut_vector =
+      &lut_vector[lut_vector_indexes[blockIdx.x] * params::degree *
+                  (glwe_dimension + 1)];
+
+  double2 *block_join_buffer =
+      &join_buffer[blockIdx.x * level_count * (glwe_dimension + 1) *
+                   params::degree / 2];
+  // Since the space is L1 cache is small, we use the same memory location for
+  // the rotated accumulator and the fft accumulator, since we know that the
+  // rotated array is not in use anymore by the time we perform the fft
+
+  // Put "b" in [0, 2N[
+  constexpr auto log_modulus = params::log2_degree + 1;
+  Torus b_hat = 0;
+  Torus correction = 0;
+  if (noise_reduction_type == PBS_MS_REDUCTION_T::CENTERED) {
+    correction = centered_binary_modulus_switch_body_correction_to_add(
+        block_lwe_array_in, lwe_dimension, log_modulus);
+  }
+  modulus_switch(block_lwe_array_in[lwe_dimension] + correction, b_hat,
+                 log_modulus);
+
+  divide_by_monomial_negacyclic_inplace<Torus, params::opt,
+                                        params::degree / params::opt>(
+      accumulator, &block_lut_vector[blockIdx.y * params::degree], b_hat,
+      false);
+  Torus temp_a_hat = 0;
+  for (int i = 0; i < lwe_dimension; i++) {
+
+    // We calculate the modulus switch of a warp size of elements
+    if (i % 32 == 0) {
+      modulus_switch(block_lwe_array_in[i + threadIdx.x % 32], temp_a_hat,
+                     log_modulus);
+    }
+    // each iteration we broadcast the corresponding ms previously calculated
+    Torus a_hat = __shfl_sync(0xFFFFFFFF, temp_a_hat, i % 32);
+
+    __syncthreads();
+    Torus reg_acc_rotated[params::opt];
+    // Perform ACC * (X^ä - 1)
+    multiply_by_monomial_negacyclic_and_sub_polynomial_in_regs<
+        Torus, params::opt, params::degree / params::opt>(
+        accumulator, reg_acc_rotated, a_hat);
+
+    init_decomposer_state_inplace_2_2_params<Torus, params::opt,
+                                             params::degree / params::opt,
+                                             base_log, level_count>(
+        reg_acc_rotated);
+
+    auto accumulator_fft = i % 2 ? accumulator_ping : accumulator_pong;
+    double2 fft_out_regs[params::opt / 2];
+    // Decompose the accumulator. Each block gets one level of the
+    // decomposition, for the mask and the body (so block 0 will have the
+    // accumulator decomposed at level 0, 1 at 1, etc.)
+    decompose_and_compress_level_2_2_params<Torus, params, base_log>(
+        fft_out_regs, reg_acc_rotated);
+
+    NSMFFT_direct_2_2_params<HalfDegree<params>>(shared_fft, fft_out_regs,
+                                                 shared_twiddles);
+    // we move registers into shared memory to use dsm
+    int tid = threadIdx.x;
+    for (Index k = 0; k < params::opt / 4; k++) {
+      accumulator_fft[tid] = fft_out_regs[k];
+      accumulator_fft[tid + params::degree / 4] =
+          fft_out_regs[k + params::opt / 4];
+      tid = tid + params::degree / params::opt;
+    }
+
+    double2 buffer_regs[params::opt / 2];
+    // Perform G^-1(ACC) * GGSW -> GLWE
+    mul_ggsw_glwe_in_fourier_domain_2_2_params_classical<
+        cluster_group, params, polynomial_size, glwe_dimension, level_count>(
+        accumulator_fft, fft_out_regs, buffer_regs, bootstrapping_key, i,
+        cluster, this_block_rank);
+
+    NSMFFT_inverse_2_2_params<HalfDegree<params>>(shared_fft, buffer_regs,
+                                                  shared_twiddles);
+
+    // We need a new version of that to torus that writes in shred memory
+    add_to_torus_2_2_params_using_shared<Torus, params>(buffer_regs,
+                                                        accumulator);
+  }
+  __syncthreads();
+  auto block_lwe_array_out =
+      &lwe_array_out[lwe_output_indexes[blockIdx.x] *
+                         (glwe_dimension * polynomial_size + 1) +
+                     blockIdx.y * polynomial_size];
+
+  if (blockIdx.z == 0) {
+    if (blockIdx.y < glwe_dimension) {
+      // Perform a sample extract. At this point, all blocks have the result,
+      // but we do the computation at block 0 to avoid waiting for extra blocks,
+      // in case they're not synchronized
+      sample_extract_mask<Torus, params>(block_lwe_array_out, accumulator);
+
+      if (num_many_lut > 1) {
+        for (int i = 1; i < num_many_lut; i++) {
+          auto next_lwe_array_out =
+              lwe_array_out +
+              (i * gridDim.x * (glwe_dimension * polynomial_size + 1));
+          auto next_block_lwe_array_out =
+              &next_lwe_array_out[lwe_output_indexes[blockIdx.x] *
+                                      (glwe_dimension * polynomial_size + 1) +
+                                  blockIdx.y * polynomial_size];
+
+          sample_extract_mask<Torus, params>(next_block_lwe_array_out,
+                                             accumulator, 1, i * lut_stride);
+        }
+      }
+    } else if (blockIdx.y == glwe_dimension) {
+      sample_extract_body<Torus, params>(block_lwe_array_out, accumulator, 0);
+
+      if (num_many_lut > 1) {
+        for (int i = 1; i < num_many_lut; i++) {
+
+          auto next_lwe_array_out =
+              lwe_array_out +
+              (i * gridDim.x * (glwe_dimension * polynomial_size + 1));
+          auto next_block_lwe_array_out =
+              &next_lwe_array_out[lwe_output_indexes[blockIdx.x] *
+                                      (glwe_dimension * polynomial_size + 1) +
+                                  blockIdx.y * polynomial_size];
+
+          sample_extract_body<Torus, params>(next_block_lwe_array_out,
+                                             accumulator, 0, i * lut_stride);
+        }
+      }
+    }
+  }
+  cluster.sync();
+}
+
+template <typename Torus, typename params>
+__host__ uint64_t scratch_programmable_bootstrap_tbc(
+    cudaStream_t stream, uint32_t gpu_index,
+    pbs_buffer<Torus, CLASSICAL> **buffer, uint32_t lwe_dimension,
+    uint32_t glwe_dimension, uint32_t polynomial_size, uint32_t level_count,
+    uint32_t input_lwe_ciphertext_count, bool allocate_gpu_memory,
+    PBS_MS_REDUCTION_T noise_reduction_type) {
+
+  cuda_set_device(gpu_index);
+
+  auto max_shared_memory = cuda_get_max_shared_memory(gpu_index);
   bool supports_dsm =
       supports_distributed_shared_memory_on_classic_programmable_bootstrap<
           Torus>(polynomial_size, max_shared_memory);
@@ -213,9 +435,12 @@ __host__ void scratch_programmable_bootstrap_tbc(
     check_cuda_error(cudaGetLastError());
   }
 
+  uint64_t size_tracker = 0;
   *buffer = new pbs_buffer<Torus, CLASSICAL>(
-      stream, gpu_index, glwe_dimension, polynomial_size, level_count,
-      input_lwe_ciphertext_count, PBS_VARIANT::TBC, allocate_gpu_memory);
+      stream, gpu_index, lwe_dimension, glwe_dimension, polynomial_size,
+      level_count, input_lwe_ciphertext_count, PBS_VARIANT::TBC,
+      allocate_gpu_memory, noise_reduction_type, size_tracker);
+  return size_tracker;
 }
 
 /*
@@ -224,14 +449,16 @@ __host__ void scratch_programmable_bootstrap_tbc(
 template <typename Torus, class params>
 __host__ void host_programmable_bootstrap_tbc(
     cudaStream_t stream, uint32_t gpu_index, Torus *lwe_array_out,
-    Torus *lwe_output_indexes, Torus *lut_vector, Torus *lut_vector_indexes,
-    Torus *lwe_array_in, Torus *lwe_input_indexes, double2 *bootstrapping_key,
+    Torus const *lwe_output_indexes, Torus const *lut_vector,
+    Torus const *lut_vector_indexes, Torus const *lwe_array_in,
+    Torus const *lwe_input_indexes, double2 const *bootstrapping_key,
     pbs_buffer<Torus, CLASSICAL> *buffer, uint32_t glwe_dimension,
     uint32_t lwe_dimension, uint32_t polynomial_size, uint32_t base_log,
     uint32_t level_count, uint32_t input_lwe_ciphertext_count,
-    uint32_t num_luts, uint32_t max_shared_memory, uint32_t gpu_offset) {
-  cudaSetDevice(gpu_index);
+    uint32_t num_many_lut, uint32_t lut_stride) {
+  cuda_set_device(gpu_index);
 
+  auto max_shared_memory = cuda_get_max_shared_memory(gpu_index);
   auto supports_dsm =
       supports_distributed_shared_memory_on_classic_programmable_bootstrap<
           Torus>(polynomial_size, max_shared_memory);
@@ -254,10 +481,10 @@ __host__ void host_programmable_bootstrap_tbc(
   uint64_t partial_dm = full_dm - partial_sm;
 
   int8_t *d_mem = buffer->d_mem;
-  double2 *buffer_fft = buffer->global_accumulator_fft;
-
+  double2 *buffer_fft = buffer->global_join_buffer;
+  auto noise_reduction_type = buffer->noise_reduction_type;
   int thds = polynomial_size / params::opt;
-  dim3 grid(level_count, glwe_dimension + 1, input_lwe_ciphertext_count);
+  dim3 grid(input_lwe_ciphertext_count, glwe_dimension + 1, level_count);
 
   cudaLaunchConfig_t config = {0};
   // The grid dimension is not affected by cluster launch, and is still
@@ -268,9 +495,9 @@ __host__ void host_programmable_bootstrap_tbc(
 
   cudaLaunchAttribute attribute[1];
   attribute[0].id = cudaLaunchAttributeClusterDimension;
-  attribute[0].val.clusterDim.x = level_count; // Cluster size in X-dimension
+  attribute[0].val.clusterDim.x = 1;
   attribute[0].val.clusterDim.y = (glwe_dimension + 1);
-  attribute[0].val.clusterDim.z = 1;
+  attribute[0].val.clusterDim.z = level_count; // Cluster size in Z-dimension
   config.attrs = attribute;
   config.numAttrs = 1;
   config.stream = stream;
@@ -283,7 +510,7 @@ __host__ void host_programmable_bootstrap_tbc(
         lwe_array_out, lwe_output_indexes, lut_vector, lut_vector_indexes,
         lwe_array_in, lwe_input_indexes, bootstrapping_key, buffer_fft,
         lwe_dimension, polynomial_size, base_log, level_count, d_mem, full_dm,
-        supports_dsm, gpu_offset));
+        supports_dsm, num_many_lut, lut_stride, noise_reduction_type));
   } else if (max_shared_memory < full_sm + minimum_sm_tbc) {
     config.dynamicSmemBytes = partial_sm + minimum_sm_tbc;
 
@@ -292,16 +519,43 @@ __host__ void host_programmable_bootstrap_tbc(
         lwe_array_out, lwe_output_indexes, lut_vector, lut_vector_indexes,
         lwe_array_in, lwe_input_indexes, bootstrapping_key, buffer_fft,
         lwe_dimension, polynomial_size, base_log, level_count, d_mem,
-        partial_dm, supports_dsm, gpu_offset));
+        partial_dm, supports_dsm, num_many_lut, lut_stride,
+        noise_reduction_type));
   } else {
-    config.dynamicSmemBytes = full_sm + minimum_sm_tbc;
+    if (polynomial_size == 2048 && level_count == 1 && glwe_dimension == 1 &&
+        base_log == 23) {
+      uint64_t full_sm_2_2 =
+          get_buffer_size_full_sm_programmable_bootstrap_tbc_2_2_params<Torus>(
+              polynomial_size);
+      config.dynamicSmemBytes = full_sm_2_2;
 
-    check_cuda_error(cudaLaunchKernelEx(
-        &config, device_programmable_bootstrap_tbc<Torus, params, FULLSM>,
-        lwe_array_out, lwe_output_indexes, lut_vector, lut_vector_indexes,
-        lwe_array_in, lwe_input_indexes, bootstrapping_key, buffer_fft,
-        lwe_dimension, polynomial_size, base_log, level_count, d_mem, 0,
-        supports_dsm, gpu_offset));
+      check_cuda_error(cudaFuncSetAttribute(
+          device_programmable_bootstrap_tbc_2_2_params<Torus, params, FULLSM>,
+          cudaFuncAttributeMaxDynamicSharedMemorySize, full_sm_2_2));
+      check_cuda_error(cudaFuncSetAttribute(
+          device_programmable_bootstrap_tbc_2_2_params<Torus, params, FULLSM>,
+          cudaFuncAttributePreferredSharedMemoryCarveout,
+          cudaSharedmemCarveoutMaxShared));
+      check_cuda_error(cudaFuncSetCacheConfig(
+          device_programmable_bootstrap_tbc_2_2_params<Torus, params, FULLSM>,
+          cudaFuncCachePreferShared));
+      check_cuda_error(cudaLaunchKernelEx(
+          &config,
+          device_programmable_bootstrap_tbc_2_2_params<Torus, params, FULLSM>,
+          lwe_array_out, lwe_output_indexes, lut_vector, lut_vector_indexes,
+          lwe_array_in, lwe_input_indexes, bootstrapping_key, buffer_fft,
+          lwe_dimension, num_many_lut, lut_stride, noise_reduction_type));
+    } else {
+      config.dynamicSmemBytes = full_sm + minimum_sm_tbc;
+
+      check_cuda_error(cudaLaunchKernelEx(
+          &config, device_programmable_bootstrap_tbc<Torus, params, FULLSM>,
+          lwe_array_out, lwe_output_indexes, lut_vector, lut_vector_indexes,
+          lwe_array_in, lwe_input_indexes, bootstrapping_key, buffer_fft,
+          lwe_dimension, polynomial_size, base_log, level_count, d_mem, 0,
+          supports_dsm, num_many_lut, lut_stride,
+          buffer->noise_reduction_type));
+    }
   }
 }
 
@@ -328,7 +582,6 @@ __host__ bool verify_cuda_programmable_bootstrap_tbc_grid_size(
   // Get the maximum number of active blocks per streaming multiprocessors
   int number_of_blocks = level_count * (glwe_dimension + 1) * num_samples;
   int max_active_blocks_per_sm;
-
   if (max_shared_memory < partial_sm) {
     cudaOccupancyMaxActiveBlocksPerMultiprocessor(
         &max_active_blocks_per_sm,
@@ -353,8 +606,7 @@ __host__ bool verify_cuda_programmable_bootstrap_tbc_grid_size(
 }
 
 template <typename Torus>
-__host__ bool
-supports_distributed_shared_memory_on_classic_programmable_bootstrap(
+bool supports_distributed_shared_memory_on_classic_programmable_bootstrap(
     uint32_t polynomial_size, uint32_t max_shared_memory) {
   uint64_t minimum_sm =
       get_buffer_size_sm_dsm_plus_tbc_classic_programmable_bootstrap<Torus>(
@@ -391,7 +643,7 @@ __host__ bool supports_thread_block_clusters_on_classic_programmable_bootstrap(
 
   int cluster_size;
 
-  dim3 grid_accumulate(level_count, glwe_dimension + 1, num_samples);
+  dim3 grid_accumulate(num_samples, glwe_dimension + 1, level_count);
   dim3 thds(polynomial_size / params::opt, 1, 1);
 
   cudaLaunchConfig_t config = {0};
@@ -422,12 +674,22 @@ __host__ bool supports_thread_block_clusters_on_classic_programmable_bootstrap(
         &cluster_size,
         device_programmable_bootstrap_tbc<Torus, params, PARTIALSM>, &config));
   } else {
-    check_cuda_error(cudaFuncSetAttribute(
-        device_programmable_bootstrap_tbc<Torus, params, FULLSM>,
-        cudaFuncAttributeNonPortableClusterSizeAllowed, false));
-    check_cuda_error(cudaOccupancyMaxPotentialClusterSize(
-        &cluster_size, device_programmable_bootstrap_tbc<Torus, params, FULLSM>,
-        &config));
+    if (polynomial_size == 2048 && level_count == 1 && glwe_dimension == 1) {
+      check_cuda_error(cudaFuncSetAttribute(
+          device_programmable_bootstrap_tbc_2_2_params<Torus, params, FULLSM>,
+          cudaFuncAttributeNonPortableClusterSizeAllowed, false));
+      check_cuda_error(cudaOccupancyMaxPotentialClusterSize(
+          &cluster_size,
+          device_programmable_bootstrap_tbc_2_2_params<Torus, params, FULLSM>,
+          &config));
+    } else {
+      check_cuda_error(cudaFuncSetAttribute(
+          device_programmable_bootstrap_tbc<Torus, params, FULLSM>,
+          cudaFuncAttributeNonPortableClusterSizeAllowed, false));
+      check_cuda_error(cudaOccupancyMaxPotentialClusterSize(
+          &cluster_size,
+          device_programmable_bootstrap_tbc<Torus, params, FULLSM>, &config));
+    }
   }
 
   return cluster_size >= level_count * (glwe_dimension + 1);

@@ -7,6 +7,7 @@ mod scalar_add;
 pub(super) mod scalar_mul;
 pub(super) mod scalar_sub;
 mod shift;
+pub(super) mod slice;
 mod sub;
 
 use super::ServerKey;
@@ -15,6 +16,7 @@ use crate::integer::ciphertext::{IntegerCiphertext, IntegerRadixCiphertext, Radi
 use crate::integer::encryption::encrypt_words_radix_impl;
 use crate::integer::{BooleanBlock, SignedRadixCiphertext};
 
+mod even_odd;
 #[cfg(test)]
 mod tests;
 
@@ -34,12 +36,12 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::{gen_keys_radix, RadixCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let ctxt: RadixCiphertext = sks.create_trivial_zero_radix(num_blocks);
     ///
@@ -67,17 +69,12 @@ impl ServerKey {
     where
         T: IntegerRadixCiphertext,
     {
-        let block_with_all_ones = self
-            .key
-            .create_trivial(self.key.message_modulus.0 as u64 - 1);
+        let block_with_all_ones = self.key.create_trivial(self.key.message_modulus.0 - 1);
         if T::IS_SIGNED {
             // The max of a two's complement number is a 0 in msb and then only 1
             let mut trivial_blocks = vec![block_with_all_ones; num_blocks - 1];
             // msb blocks has its last bit set to 0, the rest are 1
-            trivial_blocks.push(
-                self.key
-                    .create_trivial((self.message_modulus().0 >> 1) as u64 - 1),
-            );
+            trivial_blocks.push(self.key.create_trivial((self.message_modulus().0 >> 1) - 1));
             T::from_blocks(trivial_blocks)
         } else {
             // Max value is simply all bits set to one
@@ -94,9 +91,10 @@ impl ServerKey {
             let mut trivial_blocks = vec![self.key.create_trivial(0); num_blocks - 1];
             // msb block has its msb set to 1, rest is 0
             let num_bits_of_message = self.message_modulus().0.ilog2();
-            trivial_blocks.push(self.key.create_trivial(
-                (self.message_modulus().0 as u64 - 1) << (num_bits_of_message - 1),
-            ));
+            trivial_blocks.push(
+                self.key
+                    .create_trivial((self.message_modulus().0 - 1) << (num_bits_of_message - 1)),
+            );
             T::from_blocks(trivial_blocks)
         } else {
             // Min value is simply 0
@@ -112,12 +110,12 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::{gen_keys_radix, RadixCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let ctxt: RadixCiphertext = sks.create_trivial_radix(212u64, num_blocks);
     ///
@@ -145,12 +143,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 7u64;
     ///
@@ -164,7 +162,10 @@ impl ServerKey {
     /// // Decrypt
     /// let res: u64 = cks.decrypt(&ct1);
     /// assert_eq!(
-    ///     7 * (PARAM_MESSAGE_2_CARRY_2_KS_PBS.message_modulus.0 as u64).pow(added_blocks as u32),
+    ///     7 * (PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128
+    ///         .message_modulus
+    ///         .0)
+    ///         .pow(added_blocks as u32),
     ///     res
     /// );
     /// ```
@@ -184,12 +185,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 7u64;
     ///
@@ -203,7 +204,10 @@ impl ServerKey {
     /// // Decrypt
     /// let res: u64 = cks.decrypt(&ct_res);
     /// assert_eq!(
-    ///     7 * (PARAM_MESSAGE_2_CARRY_2_KS_PBS.message_modulus.0 as u64).pow(added_blocks as u32),
+    ///     7 * (PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128
+    ///         .message_modulus
+    ///         .0)
+    ///         .pow(added_blocks as u32),
     ///     res
     /// );
     /// ```
@@ -224,12 +228,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 7u64;
     ///
@@ -260,12 +264,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 7u64;
     ///
@@ -296,12 +300,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 119u64;
     ///
@@ -327,12 +331,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 119u64;
     ///
@@ -363,12 +367,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 119u64;
     ///
@@ -397,12 +401,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 119u64;
     ///
@@ -433,12 +437,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = -1i8;
     ///
@@ -460,11 +464,11 @@ impl ServerKey {
         if !ct.block_carries_are_empty() {
             self.full_propagate_parallelized(ct)
         }
-        let message_modulus = self.key.message_modulus.0 as u64;
+        let message_modulus = self.key.message_modulus.0;
         let num_bits_in_block = message_modulus.ilog2();
         let padding_block_creator_lut = self.key.generate_lookup_table(|x| {
             let x = x % message_modulus;
-            let x_sign_bit = x >> (num_bits_in_block - 1) & 1;
+            let x_sign_bit = (x >> (num_bits_in_block - 1)) & 1;
             // padding is a message full of 1 if sign bit is one
             // else padding is a zero message
             (message_modulus - 1) * x_sign_bit
@@ -488,12 +492,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = -2i8;
     ///
@@ -524,12 +528,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = -2i8;
     ///
@@ -581,7 +585,7 @@ impl ServerKey {
             } else {
                 let num_blocks_to_remove = current_num_blocks - target_num_blocks;
                 self.trim_radix_blocks_msb_assign(&mut ct_as_unsigned_radix, num_blocks_to_remove);
-            };
+            }
             ct_as_unsigned_radix.blocks
         };
 
@@ -600,12 +604,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 8;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = u16::MAX;
     ///
@@ -656,7 +660,7 @@ impl ServerKey {
             } else {
                 let num_blocks_to_remove = current_num_blocks - target_num_blocks;
                 self.trim_radix_blocks_msb_assign(&mut ct_as_unsigned_radix, num_blocks_to_remove);
-            };
+            }
             ct_as_unsigned_radix.blocks
         };
 
@@ -674,12 +678,12 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 7u64;
     ///
@@ -704,6 +708,16 @@ impl ServerKey {
 
         //add the carry to the next block
         if index < ctxt.blocks().len() - 1 {
+            let next_block = &mut ctxt.blocks_mut()[index + 1];
+            if self
+                .key
+                .max_noise_level
+                .validate(next_block.noise_level() + carry.noise_level())
+                .is_err()
+            {
+                let id_lut = self.key.generate_lookup_table(|x| x);
+                self.key.apply_lookup_table_assign(next_block, &id_lut);
+            }
             self.key
                 .unchecked_add_assign(&mut ctxt.blocks_mut()[index + 1], &carry);
         }
@@ -714,18 +728,18 @@ impl ServerKey {
     /// # Example
     ///
     ///```rust
-    /// use tfhe::integer::{gen_keys_radix, IntegerCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::integer::gen_keys_radix;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 10;
     ///
-    /// let mut ct1 = cks.encrypt(msg);
-    /// let mut ct2 = cks.encrypt(msg);
+    /// let ct1 = cks.encrypt(msg);
+    /// let ct2 = cks.encrypt(msg);
     ///
     /// // Compute homomorphically an addition:
     /// let mut ct_res = sks.unchecked_add(&ct1, &ct2);

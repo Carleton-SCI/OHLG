@@ -318,7 +318,7 @@ fn compressed_bool_test_case(setup_fn: impl FnOnce() -> (ClientKey, Device)) {
 
 mod cpu {
     use super::*;
-    use crate::safe_deserialization::safe_deserialize_conformant;
+    use crate::safe_serialization::{DeserializationConfig, SerializationConfig};
     use crate::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     use crate::FheBoolConformanceParams;
     use rand::random;
@@ -676,18 +676,20 @@ mod cpu {
     fn test_safe_deserialize_conformant_fhe_bool() {
         let block_params = PARAM_MESSAGE_2_CARRY_2_KS_PBS;
         let (client_key, server_key) =
-            generate_keys(ConfigBuilder::with_custom_parameters(block_params, None));
+            generate_keys(ConfigBuilder::with_custom_parameters(block_params));
         set_server_key(server_key.clone());
 
         let clear_a = random::<bool>();
         let a = FheBool::encrypt(clear_a, &client_key);
         let mut serialized = vec![];
-        assert!(crate::safe_serialize(&a, &mut serialized, 1 << 20).is_ok());
+        SerializationConfig::new(1 << 20)
+            .serialize_into(&a, &mut serialized)
+            .unwrap();
 
         let params = FheBoolConformanceParams::from(&server_key);
-        let deserialized_a =
-            safe_deserialize_conformant::<FheBool>(serialized.as_slice(), 1 << 20, &params)
-                .unwrap();
+        let deserialized_a = DeserializationConfig::new(1 << 20)
+            .deserialize_from::<FheBool>(serialized.as_slice(), &params)
+            .unwrap();
         let decrypted: bool = deserialized_a.decrypt(&client_key);
         assert_eq!(decrypted, clear_a);
 
@@ -698,20 +700,19 @@ mod cpu {
     fn test_safe_deserialize_conformant_compressed_fhe_bool() {
         let block_params = PARAM_MESSAGE_2_CARRY_2_KS_PBS;
         let (client_key, server_key) =
-            generate_keys(ConfigBuilder::with_custom_parameters(block_params, None));
+            generate_keys(ConfigBuilder::with_custom_parameters(block_params));
         set_server_key(server_key.clone());
         let clear_a = random::<bool>();
         let a = CompressedFheBool::encrypt(clear_a, &client_key);
         let mut serialized = vec![];
-        assert!(crate::safe_serialize(&a, &mut serialized, 1 << 20).is_ok());
+        SerializationConfig::new(1 << 20)
+            .serialize_into(&a, &mut serialized)
+            .unwrap();
 
         let params = FheBoolConformanceParams::from(&server_key);
-        let deserialized_a = safe_deserialize_conformant::<CompressedFheBool>(
-            serialized.as_slice(),
-            1 << 20,
-            &params,
-        )
-        .unwrap();
+        let deserialized_a = DeserializationConfig::new(1 << 20)
+            .deserialize_from::<CompressedFheBool>(serialized.as_slice(), &params)
+            .unwrap();
 
         assert!(deserialized_a.is_conformant(&FheBoolConformanceParams::from(block_params)));
 
@@ -723,6 +724,7 @@ mod cpu {
 #[cfg(feature = "gpu")]
 mod gpu {
     use super::*;
+    use crate::GpuIndex;
 
     fn setup_gpu_default() -> ClientKey {
         let config = ConfigBuilder::default().build();
@@ -1024,5 +1026,34 @@ mod gpu {
     #[test]
     fn test_compressed_bool() {
         compressed_bool_test_case(|| (setup_gpu_default(), Device::CudaGpu));
+    }
+    #[test]
+    fn test_get_size_on_gpu() {
+        let keys = setup_gpu_default();
+
+        let ttrue = FheBool::encrypt(true, &keys);
+        let ffalse = FheBool::encrypt(false, &keys);
+        let bitand_size_on_gpu = ttrue.get_bitand_size_on_gpu(&ffalse);
+        check_valid_cuda_malloc_assert_oom(bitand_size_on_gpu, GpuIndex::new(0));
+        let scalar_bitand_size_on_gpu = ttrue.get_bitand_size_on_gpu(false);
+        check_valid_cuda_malloc_assert_oom(scalar_bitand_size_on_gpu, GpuIndex::new(0));
+        let bitxor_size_on_gpu = ttrue.get_bitxor_size_on_gpu(&ffalse);
+        check_valid_cuda_malloc_assert_oom(bitxor_size_on_gpu, GpuIndex::new(0));
+        let scalar_bitxor_size_on_gpu = ttrue.get_bitxor_size_on_gpu(false);
+        check_valid_cuda_malloc_assert_oom(scalar_bitxor_size_on_gpu, GpuIndex::new(0));
+        let bitor_size_on_gpu = ttrue.get_bitor_size_on_gpu(&ffalse);
+        check_valid_cuda_malloc_assert_oom(bitor_size_on_gpu, GpuIndex::new(0));
+        let scalar_bitor_size_on_gpu = ttrue.get_bitor_size_on_gpu(false);
+        check_valid_cuda_malloc_assert_oom(scalar_bitor_size_on_gpu, GpuIndex::new(0));
+        let bitnot_size_on_gpu = ttrue.get_bitnot_size_on_gpu();
+        check_valid_cuda_malloc_assert_oom(bitnot_size_on_gpu, GpuIndex::new(0));
+        let eq_size_on_gpu = ttrue.get_eq_size_on_gpu(&ffalse);
+        check_valid_cuda_malloc_assert_oom(eq_size_on_gpu, GpuIndex::new(0));
+        let scalar_eq_size_on_gpu = ttrue.get_eq_size_on_gpu(false);
+        check_valid_cuda_malloc_assert_oom(scalar_eq_size_on_gpu, GpuIndex::new(0));
+        let ne_size_on_gpu = ttrue.get_ne_size_on_gpu(&ffalse);
+        check_valid_cuda_malloc_assert_oom(ne_size_on_gpu, GpuIndex::new(0));
+        let scalar_ne_size_on_gpu = ttrue.get_ne_size_on_gpu(false);
+        check_valid_cuda_malloc_assert_oom(scalar_ne_size_on_gpu, GpuIndex::new(0));
     }
 }

@@ -3,6 +3,7 @@
 use crate::core_crypto::commons::math::random::{
     ByteRandomGenerator, RandomGenerable, RandomGenerator, Seed, Seeder, Uniform,
 };
+use tfhe_csprng::seeders::SeedKind;
 
 /// Seeder backed by a CSPRNG
 ///
@@ -10,7 +11,7 @@ use crate::core_crypto::commons::math::random::{
 /// ## Why this Seeder implementation?
 ///
 /// [`Seeder`] is a trait available to the external user, and we expect some of them to implement
-/// their own seeding strategy. Since this trait is public, it means that the implementor can be
+/// their own seeding strategy. Since this trait is public, it means that the implementer can be
 /// arbitrarily slow. For this reason, it is better to only use it once when we initialize the
 /// engine, and use the CSPRNG to generate other seeds when needed, because that gives us the
 /// control on the performances.
@@ -37,7 +38,7 @@ pub struct DeterministicSeeder<G: ByteRandomGenerator> {
 }
 
 impl<G: ByteRandomGenerator> DeterministicSeeder<G> {
-    pub fn new(seed: Seed) -> Self {
+    pub fn new(seed: impl Into<SeedKind>) -> Self {
         Self {
             generator: RandomGenerator::new(seed),
         }

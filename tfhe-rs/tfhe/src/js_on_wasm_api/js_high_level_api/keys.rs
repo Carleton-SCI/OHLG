@@ -1,6 +1,7 @@
 use crate::high_level_api as hlapi;
 use crate::js_on_wasm_api::js_high_level_api::config::TfheConfig;
 use crate::js_on_wasm_api::js_high_level_api::{catch_panic, catch_panic_result, into_js_error};
+use crate::js_on_wasm_api::shortint::ShortintCompactPublicKeyEncryptionParameters;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -44,6 +45,32 @@ impl TfheClientKey {
                 .map_err(into_js_error)
         })
     }
+
+    #[wasm_bindgen]
+    pub fn safe_serialize(&self, serialized_size_limit: u64) -> Result<Vec<u8>, JsError> {
+        let mut buffer = vec![];
+        catch_panic_result(|| {
+            crate::safe_serialization::SerializationConfig::new(serialized_size_limit)
+                .serialize_into(&self.0, &mut buffer)
+                .map_err(into_js_error)
+        })?;
+
+        Ok(buffer)
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_deserialize(
+        buffer: &[u8],
+        serialized_size_limit: u64,
+    ) -> Result<TfheClientKey, JsError> {
+        catch_panic_result(|| {
+            crate::safe_serialization::DeserializationConfig::new(serialized_size_limit)
+                .disable_conformance()
+                .deserialize_from(buffer)
+                .map(Self)
+                .map_err(into_js_error)
+        })
+    }
 }
 
 // Wasm cannot generate a normal server key, only a compressed one
@@ -70,6 +97,51 @@ impl TfheCompressedServerKey {
                 .map_err(into_js_error)
         })
     }
+
+    #[wasm_bindgen]
+    pub fn safe_serialize(&self, serialized_size_limit: u64) -> Result<Vec<u8>, JsError> {
+        let mut buffer = vec![];
+        catch_panic_result(|| {
+            crate::safe_serialization::SerializationConfig::new(serialized_size_limit)
+                .serialize_into(&self.0, &mut buffer)
+                .map_err(into_js_error)
+        })?;
+
+        Ok(buffer)
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_deserialize(
+        buffer: &[u8],
+        serialized_size_limit: u64,
+    ) -> Result<TfheCompressedServerKey, JsError> {
+        catch_panic_result(|| {
+            crate::safe_serialization::DeserializationConfig::new(serialized_size_limit)
+                .disable_conformance()
+                .deserialize_from(buffer)
+                .map(Self)
+                .map_err(into_js_error)
+        })
+    }
+}
+
+#[wasm_bindgen]
+pub struct TfheServerKey(pub(crate) hlapi::ServerKey);
+
+#[wasm_bindgen]
+impl TfheServerKey {
+    #[wasm_bindgen]
+    pub fn new(client_key: &TfheClientKey) -> Result<TfheServerKey, JsError> {
+        catch_panic_result(|| Ok(Self(hlapi::ServerKey::new(&client_key.0))))
+    }
+}
+
+#[wasm_bindgen]
+pub fn set_server_key(server_key: &TfheServerKey) -> Result<(), JsError> {
+    catch_panic_result(|| {
+        crate::set_server_key(server_key.0.clone());
+        Ok(())
+    })
 }
 
 #[wasm_bindgen]
@@ -104,6 +176,32 @@ impl TfhePublicKey {
                 .map_err(into_js_error)
         })
     }
+
+    #[wasm_bindgen]
+    pub fn safe_serialize(&self, serialized_size_limit: u64) -> Result<Vec<u8>, JsError> {
+        let mut buffer = vec![];
+        catch_panic_result(|| {
+            crate::safe_serialization::SerializationConfig::new(serialized_size_limit)
+                .serialize_into(&self.0, &mut buffer)
+                .map_err(into_js_error)
+        })?;
+
+        Ok(buffer)
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_deserialize(
+        buffer: &[u8],
+        serialized_size_limit: u64,
+    ) -> Result<TfhePublicKey, JsError> {
+        catch_panic_result(|| {
+            crate::safe_serialization::DeserializationConfig::new(serialized_size_limit)
+                .disable_conformance()
+                .deserialize_from(buffer)
+                .map(Self)
+                .map_err(into_js_error)
+        })
+    }
 }
 
 #[wasm_bindgen]
@@ -134,6 +232,32 @@ impl TfheCompressedPublicKey {
                 .map_err(into_js_error)
         })
     }
+
+    #[wasm_bindgen]
+    pub fn safe_serialize(&self, serialized_size_limit: u64) -> Result<Vec<u8>, JsError> {
+        let mut buffer = vec![];
+        catch_panic_result(|| {
+            crate::safe_serialization::SerializationConfig::new(serialized_size_limit)
+                .serialize_into(&self.0, &mut buffer)
+                .map_err(into_js_error)
+        })?;
+
+        Ok(buffer)
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_deserialize(
+        buffer: &[u8],
+        serialized_size_limit: u64,
+    ) -> Result<TfheCompressedPublicKey, JsError> {
+        catch_panic_result(|| {
+            crate::safe_serialization::DeserializationConfig::new(serialized_size_limit)
+                .disable_conformance()
+                .deserialize_from(buffer)
+                .map(Self)
+                .map_err(into_js_error)
+        })
+    }
 }
 
 #[wasm_bindgen]
@@ -155,6 +279,46 @@ impl TfheCompactPublicKey {
     pub fn deserialize(buffer: &[u8]) -> Result<TfheCompactPublicKey, JsError> {
         catch_panic_result(|| {
             bincode::deserialize(buffer)
+                .map(Self)
+                .map_err(into_js_error)
+        })
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_serialize(&self, serialized_size_limit: u64) -> Result<Vec<u8>, JsError> {
+        let mut buffer = vec![];
+        catch_panic_result(|| {
+            crate::safe_serialization::SerializationConfig::new(serialized_size_limit)
+                .serialize_into(&self.0, &mut buffer)
+                .map_err(into_js_error)
+        })?;
+
+        Ok(buffer)
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_deserialize(
+        buffer: &[u8],
+        serialized_size_limit: u64,
+    ) -> Result<TfheCompactPublicKey, JsError> {
+        catch_panic_result(|| {
+            crate::safe_serialization::DeserializationConfig::new(serialized_size_limit)
+                .disable_conformance()
+                .deserialize_from(buffer)
+                .map(Self)
+                .map_err(into_js_error)
+        })
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_deserialize_conformant(
+        buffer: &[u8],
+        serialized_size_limit: u64,
+        conformance_params: &ShortintCompactPublicKeyEncryptionParameters,
+    ) -> Result<TfheCompactPublicKey, JsError> {
+        catch_panic_result(|| {
+            crate::safe_serialization::DeserializationConfig::new(serialized_size_limit)
+                .deserialize_from(buffer, &conformance_params.compact_pke_params)
                 .map(Self)
                 .map_err(into_js_error)
         })
@@ -188,5 +352,45 @@ impl TfheCompressedCompactPublicKey {
     #[wasm_bindgen]
     pub fn decompress(&self) -> Result<TfheCompactPublicKey, JsError> {
         catch_panic(|| TfheCompactPublicKey(self.0.decompress()))
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_serialize(&self, serialized_size_limit: u64) -> Result<Vec<u8>, JsError> {
+        let mut buffer = vec![];
+        catch_panic_result(|| {
+            crate::safe_serialization::SerializationConfig::new(serialized_size_limit)
+                .serialize_into(&self.0, &mut buffer)
+                .map_err(into_js_error)
+        })?;
+
+        Ok(buffer)
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_deserialize(
+        buffer: &[u8],
+        serialized_size_limit: u64,
+    ) -> Result<TfheCompressedCompactPublicKey, JsError> {
+        catch_panic_result(|| {
+            crate::safe_serialization::DeserializationConfig::new(serialized_size_limit)
+                .disable_conformance()
+                .deserialize_from(buffer)
+                .map(Self)
+                .map_err(into_js_error)
+        })
+    }
+
+    #[wasm_bindgen]
+    pub fn safe_deserialize_conformant(
+        buffer: &[u8],
+        serialized_size_limit: u64,
+        conformance_params: &ShortintCompactPublicKeyEncryptionParameters,
+    ) -> Result<TfheCompressedCompactPublicKey, JsError> {
+        catch_panic_result(|| {
+            crate::safe_serialization::DeserializationConfig::new(serialized_size_limit)
+                .deserialize_from(buffer, &conformance_params.compact_pke_params)
+                .map(Self)
+                .map_err(into_js_error)
+        })
     }
 }

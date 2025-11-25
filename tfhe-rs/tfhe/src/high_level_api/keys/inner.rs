@@ -1,82 +1,107 @@
+use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::commons::generators::DeterministicSeeder;
-use crate::core_crypto::prelude::ActivatedRandomGenerator;
+use crate::core_crypto::prelude::{DefaultRandomGenerator, LweKeyswitchKeyConformanceParams};
 use crate::high_level_api::backward_compatibility::keys::*;
-use crate::integer::public_key::CompactPublicKey;
-use crate::integer::CompressedCompactPublicKey;
-use crate::shortint::list_compression::{
+use crate::high_level_api::errors::UnwrapResultExt;
+use crate::high_level_api::keys::cpk_re_randomization::{
+    CompressedReRandomizationKeySwitchingKey, ReRandomizationKeySwitchingKey,
+};
+use crate::high_level_api::keys::ReRandomizationKeyGenerationInfo;
+use crate::integer::ciphertext::{
+    CompressedNoiseSquashingCompressionKey, NoiseSquashingCompressionKey,
+    NoiseSquashingCompressionPrivateKey,
+};
+use crate::integer::compression_keys::{
     CompressedCompressionKey, CompressedDecompressionKey, CompressionKey, CompressionPrivateKeys,
     DecompressionKey,
 };
+use crate::integer::noise_squashing::{
+    CompressedNoiseSquashingKey, NoiseSquashingKey, NoiseSquashingPrivateKey,
+};
+use crate::integer::public_key::CompactPublicKey;
+use crate::integer::CompressedCompactPublicKey;
+use crate::shortint::atomic_pattern::AtomicPatternParameters;
+use crate::shortint::key_switching_key::KeySwitchingKeyConformanceParams;
 use crate::shortint::parameters::list_compression::CompressionParameters;
+use crate::shortint::parameters::{
+    CompactPublicKeyEncryptionParameters, NoiseSquashingCompressionParameters,
+    NoiseSquashingParameters, ShortintKeySwitchingParameters,
+};
 use crate::shortint::{EncryptionKeyChoice, MessageModulus};
-use crate::Error;
-use concrete_csprng::seeders::Seed;
+use crate::{Config, Error};
 use serde::{Deserialize, Serialize};
+use tfhe_csprng::seeders::Seed;
 use tfhe_versionable::Versionize;
 
-// Clippy complained that fields end in _parameters, :roll_eyes:
 #[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize, Versionize)]
 #[versionize(IntegerConfigVersions)]
-#[allow(clippy::struct_field_names)]
 pub(crate) struct IntegerConfig {
-    pub(crate) block_parameters: crate::shortint::PBSParameters,
-    pub(crate) wopbs_block_parameters: Option<crate::shortint::WopbsParameters>,
+    pub(crate) block_parameters: crate::shortint::atomic_pattern::AtomicPatternParameters,
     pub(crate) dedicated_compact_public_key_parameters: Option<(
-        crate::shortint::parameters::CompactPublicKeyEncryptionParameters,
-        crate::shortint::parameters::ShortintKeySwitchingParameters,
+        CompactPublicKeyEncryptionParameters,
+        ShortintKeySwitchingParameters,
     )>,
     pub(crate) compression_parameters: Option<CompressionParameters>,
+    pub(crate) noise_squashing_parameters: Option<NoiseSquashingParameters>,
+    pub(crate) noise_squashing_compression_parameters: Option<NoiseSquashingCompressionParameters>,
+    pub(crate) cpk_re_randomization_ksk_params: Option<ShortintKeySwitchingParameters>,
 }
 
 impl IntegerConfig {
     pub(crate) fn new(
-        block_parameters: crate::shortint::PBSParameters,
-        wopbs_block_parameters: Option<crate::shortint::WopbsParameters>,
-        dedicated_compact_public_key_parameters: Option<(
-            crate::shortint::parameters::CompactPublicKeyEncryptionParameters,
-            crate::shortint::parameters::ShortintKeySwitchingParameters,
-        )>,
+        block_parameters: crate::shortint::atomic_pattern::AtomicPatternParameters,
     ) -> Self {
         Self {
             block_parameters,
-            wopbs_block_parameters,
-            dedicated_compact_public_key_parameters,
-            compression_parameters: None,
-        }
-    }
-
-    pub(in crate::high_level_api) fn default_big() -> Self {
-        Self {
-            block_parameters: crate::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS.into(),
-            wopbs_block_parameters: None,
             dedicated_compact_public_key_parameters: None,
             compression_parameters: None,
+            noise_squashing_parameters: None,
+            noise_squashing_compression_parameters: None,
+            cpk_re_randomization_ksk_params: None,
         }
     }
 
-    pub(in crate::high_level_api) fn default_small() -> Self {
-        Self {
-            block_parameters: crate::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_PBS_KS.into(),
-            wopbs_block_parameters: None,
-            dedicated_compact_public_key_parameters: None,
-            compression_parameters: None,
-        }
-    }
-
-    pub fn enable_wopbs(&mut self) {
-        let wopbs_block_parameters = match self.block_parameters.encryption_key_choice() {
-            EncryptionKeyChoice::Big => crate::shortint::parameters::parameters_wopbs_message_carry::WOPBS_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            EncryptionKeyChoice::Small=> panic!("WOPBS only support KS_PBS parameters")
-        };
-
-        self.wopbs_block_parameters = Some(wopbs_block_parameters);
-    }
-
-    pub fn enable_compression(&mut self, compression_parameters: CompressionParameters) {
+    pub(crate) fn enable_compression(&mut self, compression_parameters: CompressionParameters) {
         self.compression_parameters = Some(compression_parameters);
     }
 
-    pub fn public_key_encryption_parameters(
+    pub(crate) fn enable_noise_squashing(
+        &mut self,
+        compression_parameters: NoiseSquashingParameters,
+    ) {
+        self.noise_squashing_parameters = Some(compression_parameters);
+    }
+
+    pub(crate) fn enable_noise_squashing_compression(
+        &mut self,
+        compression_parameters: NoiseSquashingCompressionParameters,
+    ) {
+        assert_ne!(
+            self.noise_squashing_parameters, None,
+            "Noise squashing must be enabled first"
+        );
+        self.noise_squashing_compression_parameters = Some(compression_parameters);
+    }
+
+    pub(crate) fn enable_ciphertext_re_randomization(
+        &mut self,
+        cpk_re_randomization_ksk_params: ShortintKeySwitchingParameters,
+    ) {
+        assert_ne!(
+            self.dedicated_compact_public_key_parameters, None,
+            "Dedicated Compact Public Key parameters must be provided to enable re-randomization."
+        );
+        assert!(
+            matches!(
+                cpk_re_randomization_ksk_params.destination_key,
+                EncryptionKeyChoice::Big
+            ),
+            "CompactPublicKey re-randomization can only be enabled targeting the large key."
+        );
+        self.cpk_re_randomization_ksk_params = Some(cpk_re_randomization_ksk_params);
+    }
+
+    pub(crate) fn public_key_encryption_parameters(
         &self,
     ) -> Result<crate::shortint::parameters::CompactPublicKeyEncryptionParameters, crate::Error>
     {
@@ -84,6 +109,26 @@ impl IntegerConfig {
             Ok(p.0)
         } else {
             Ok(self.block_parameters.try_into()?)
+        }
+    }
+}
+
+impl Default for IntegerConfig {
+    fn default() -> Self {
+        #[cfg(not(feature = "gpu"))]
+        let params =
+            crate::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128.into();
+        #[cfg(feature = "gpu")]
+        let params =
+            crate::shortint::parameters::PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128
+                .into();
+        Self {
+            block_parameters: params,
+            dedicated_compact_public_key_parameters: None,
+            compression_parameters: None,
+            noise_squashing_parameters: None,
+            noise_squashing_compression_parameters: None,
+            cpk_re_randomization_ksk_params: None,
         }
     }
 }
@@ -97,9 +142,14 @@ pub type CompactPrivateKey = (
 #[versionize(IntegerClientKeyVersions)]
 pub(crate) struct IntegerClientKey {
     pub(crate) key: crate::integer::ClientKey,
-    pub(crate) wopbs_block_parameters: Option<crate::shortint::WopbsParameters>,
     pub(crate) dedicated_compact_private_key: Option<CompactPrivateKey>,
     pub(crate) compression_key: Option<CompressionPrivateKeys>,
+    pub(crate) noise_squashing_private_key: Option<NoiseSquashingPrivateKey>,
+    pub(crate) noise_squashing_compression_private_key: Option<NoiseSquashingCompressionPrivateKey>,
+    // The re-randomization happens between a dedicated compact private key and the post PBS secret
+    // key, it needs additional information on how to create the required key switching key, hence
+    // this optional field
+    pub(crate) cpk_re_randomization_ksk_params: Option<ShortintKeySwitchingParameters>,
 }
 
 impl IntegerClientKey {
@@ -108,47 +158,67 @@ impl IntegerClientKey {
             (config.block_parameters.message_modulus().0) == 2 || config.block_parameters.message_modulus().0 == 4,
             "This API only supports parameters for which the MessageModulus is 2 or 4 (1 or 2 bits per block)",
         );
-        let mut seeder = DeterministicSeeder::<ActivatedRandomGenerator>::new(seed);
+        let mut seeder = DeterministicSeeder::<DefaultRandomGenerator>::new(seed);
         let cks = crate::shortint::engine::ShortintEngine::new_from_seeder(&mut seeder)
-            .new_client_key(config.block_parameters.into());
+            .new_client_key(config.block_parameters);
+
+        let key = crate::integer::ClientKey::from(cks);
 
         let compression_key = config
             .compression_parameters
-            .map(|params| cks.new_compression_private_key(params));
-
-        let key = crate::integer::ClientKey::from(cks);
+            .map(|params| key.new_compression_private_key(params));
 
         let dedicated_compact_private_key = config
             .dedicated_compact_public_key_parameters
             .map(|p| (crate::integer::CompactPrivateKey::new(p.0), p.1));
+
+        let noise_squashing_private_key = config
+            .noise_squashing_parameters
+            .map(NoiseSquashingPrivateKey::new);
+
+        let noise_squashing_compression_private_key = config
+            .noise_squashing_compression_parameters
+            .map(NoiseSquashingCompressionPrivateKey::new);
+
+        let cpk_re_randomization_ksk_params = config.cpk_re_randomization_ksk_params;
+
         Self {
             key,
-            wopbs_block_parameters: config.wopbs_block_parameters,
             dedicated_compact_private_key,
             compression_key,
+            noise_squashing_private_key,
+            noise_squashing_compression_private_key,
+            cpk_re_randomization_ksk_params,
         }
     }
 
+    #[allow(clippy::type_complexity)]
     /// Deconstruct an [`IntegerClientKey`] into its constituents.
     pub fn into_raw_parts(
         self,
     ) -> (
         crate::integer::ClientKey,
-        Option<crate::shortint::WopbsParameters>,
         Option<CompactPrivateKey>,
         Option<CompressionPrivateKeys>,
+        Option<NoiseSquashingPrivateKey>,
+        Option<NoiseSquashingCompressionPrivateKey>,
+        Option<ShortintKeySwitchingParameters>,
     ) {
         let Self {
             key,
-            wopbs_block_parameters,
             dedicated_compact_private_key,
             compression_key,
+            noise_squashing_private_key,
+            noise_squashing_compression_private_key,
+            cpk_re_randomization_ksk_params,
         } = self;
         (
             key,
-            wopbs_block_parameters,
             dedicated_compact_private_key,
             compression_key,
+            noise_squashing_private_key,
+            noise_squashing_compression_private_key,
+            cpk_re_randomization_ksk_params,
         )
     }
 
@@ -159,25 +229,17 @@ impl IntegerClientKey {
     /// Panics if the provided raw parts are not compatible with the provided parameters.
     pub fn from_raw_parts(
         key: crate::integer::ClientKey,
-        wopbs_block_parameters: Option<crate::shortint::WopbsParameters>,
         dedicated_compact_private_key: Option<CompactPrivateKey>,
         compression_key: Option<CompressionPrivateKeys>,
+        noise_squashing_private_key: Option<NoiseSquashingPrivateKey>,
+        noise_squashing_compression_private_key: Option<NoiseSquashingCompressionPrivateKey>,
+        cpk_re_randomization_ksk_params: Option<ShortintKeySwitchingParameters>,
     ) -> Self {
         let shortint_cks: &crate::shortint::ClientKey = key.as_ref();
-        if let Some(wop_params) = wopbs_block_parameters.as_ref() {
-            assert_eq!(
-                shortint_cks.parameters.message_modulus(),
-                wop_params.message_modulus
-            );
-            assert_eq!(
-                shortint_cks.parameters.carry_modulus(),
-                wop_params.carry_modulus
-            );
-        }
 
         if let Some(dedicated_compact_private_key) = dedicated_compact_private_key.as_ref() {
             assert_eq!(
-                shortint_cks.parameters.message_modulus(),
+                shortint_cks.parameters().message_modulus(),
                 dedicated_compact_private_key
                     .0
                     .key
@@ -185,7 +247,7 @@ impl IntegerClientKey {
                     .message_modulus,
             );
             assert_eq!(
-                shortint_cks.parameters.carry_modulus(),
+                shortint_cks.parameters().carry_modulus(),
                 dedicated_compact_private_key
                     .0
                     .key
@@ -196,14 +258,46 @@ impl IntegerClientKey {
 
         Self {
             key,
-            wopbs_block_parameters,
             dedicated_compact_private_key,
             compression_key,
+            noise_squashing_private_key,
+            noise_squashing_compression_private_key,
+            cpk_re_randomization_ksk_params,
         }
     }
 
-    pub(crate) fn block_parameters(&self) -> crate::shortint::parameters::PBSParameters {
+    pub(crate) fn block_parameters(&self) -> crate::shortint::parameters::AtomicPatternParameters {
         self.key.parameters()
+    }
+
+    pub(crate) fn re_randomization_ksk_gen_info(
+        &self,
+    ) -> Result<Option<ReRandomizationKeyGenerationInfo<'_>>, crate::Error> {
+        let maybe_cpk = self.dedicated_compact_private_key.as_ref();
+        let maybe_re_rand_ksk_params = self.cpk_re_randomization_ksk_params.as_ref();
+        match (maybe_cpk, maybe_re_rand_ksk_params) {
+            (Some((cpk, cpke_ksk_params)), Some(re_rand_ksk_params)) => {
+                if re_rand_ksk_params.destination_key != EncryptionKeyChoice::Big {
+                    return Err(crate::error!(
+                        "CompactPublicKey re-randomization can only be enabled \
+                        targeting the large secret key."
+                    ));
+                }
+
+                if cpke_ksk_params == re_rand_ksk_params {
+                    Ok(Some(ReRandomizationKeyGenerationInfo::UseCPKEncryptionKSK))
+                } else {
+                    Ok(Some(ReRandomizationKeyGenerationInfo::DedicatedKSK((
+                        cpk,
+                        *re_rand_ksk_params,
+                    ))))
+                }
+            }
+            (_, None) => Ok(None),
+            _ => Err(crate::error!(
+                "Inconsistent ClientKey set-up for CompactPublicKey re-randomization."
+            )),
+        }
     }
 }
 
@@ -222,13 +316,25 @@ impl From<IntegerConfig> for IntegerClientKey {
 
         let compression_key = config
             .compression_parameters
-            .map(|params| key.key.new_compression_private_key(params));
+            .map(|params| key.new_compression_private_key(params));
+
+        let noise_squashing_private_key = config
+            .noise_squashing_parameters
+            .map(NoiseSquashingPrivateKey::new);
+
+        let noise_squashing_compression_private_key = config
+            .noise_squashing_compression_parameters
+            .map(NoiseSquashingCompressionPrivateKey::new);
+
+        let cpk_re_randomization_ksk_params = config.cpk_re_randomization_ksk_params;
 
         Self {
             key,
-            wopbs_block_parameters: config.wopbs_block_parameters,
             dedicated_compact_private_key,
             compression_key,
+            noise_squashing_private_key,
+            noise_squashing_compression_private_key,
+            cpk_re_randomization_ksk_params,
         }
     }
 }
@@ -237,7 +343,6 @@ impl From<IntegerConfig> for IntegerClientKey {
 #[versionize(IntegerServerKeyVersions)]
 pub struct IntegerServerKey {
     pub(crate) key: crate::integer::ServerKey,
-    pub(crate) wopbs_key: Option<crate::integer::wopbs::WopbsKey>,
     // Storing a KeySwitchingKeyView would require a self reference -> nightmare
     // Storing a KeySwitchingKey would mean cloning the ServerKey and means more memory traffic to
     // fetch the exact same key, so we store the part of the key that are not ServerKeys and we
@@ -246,6 +351,10 @@ pub struct IntegerServerKey {
         Option<crate::integer::key_switching_key::KeySwitchingKeyMaterial>,
     pub(crate) compression_key: Option<CompressionKey>,
     pub(crate) decompression_key: Option<DecompressionKey>,
+    pub(crate) noise_squashing_key: Option<NoiseSquashingKey>,
+    pub(crate) noise_squashing_compression_key: Option<NoiseSquashingCompressionKey>,
+    pub(crate) cpk_re_randomization_key_switching_key_material:
+        Option<ReRandomizationKeySwitchingKey>,
 }
 
 impl IntegerServerKey {
@@ -256,18 +365,12 @@ impl IntegerServerKey {
             || (None, None),
             |a| {
                 let (compression_key, decompression_key) =
-                    cks.key.new_compression_decompression_keys(a);
+                    cks.new_compression_decompression_keys(a);
                 (Some(compression_key), Some(decompression_key))
             },
         );
 
         let base_integer_key = crate::integer::ServerKey::new_radix_server_key(cks);
-        let wopbs_key = client_key
-            .wopbs_block_parameters
-            .as_ref()
-            .map(|wopbs_params| {
-                crate::integer::wopbs::WopbsKey::new_wopbs_key(cks, &base_integer_key, wopbs_params)
-            });
 
         let cpk_key_switching_key_material =
             client_key
@@ -283,12 +386,54 @@ impl IntegerServerKey {
 
                     build_helper.into()
                 });
+
+        let (noise_squashing_key, noise_squashing_compression_key) =
+            client_key.noise_squashing_private_key.as_ref().map_or_else(
+                || (None, None),
+                |noise_squashing_private_key| {
+                    let noise_squashing_key =
+                        NoiseSquashingKey::new(cks, noise_squashing_private_key);
+                    let noise_squashing_compression_key = client_key
+                        .noise_squashing_compression_private_key
+                        .as_ref()
+                        .map(|comp_private_key| {
+                            noise_squashing_private_key
+                                .new_noise_squashing_compression_key(comp_private_key)
+                        });
+                    (Some(noise_squashing_key), noise_squashing_compression_key)
+                },
+            );
+
+        let cpk_re_randomization_key_switching_key_material = client_key
+            .re_randomization_ksk_gen_info()
+            .unwrap_display()
+            .map(|key_gen_info| match key_gen_info {
+                ReRandomizationKeyGenerationInfo::UseCPKEncryptionKSK => {
+                    ReRandomizationKeySwitchingKey::UseCPKEncryptionKSK
+                }
+                ReRandomizationKeyGenerationInfo::DedicatedKSK((
+                    input_cpk,
+                    cpk_re_randomization_ksk_params,
+                )) => {
+                    let build_helper =
+                        crate::integer::key_switching_key::KeySwitchingKeyBuildHelper::new(
+                            (input_cpk, None),
+                            (cks, &base_integer_key),
+                            cpk_re_randomization_ksk_params,
+                        );
+
+                    ReRandomizationKeySwitchingKey::DedicatedKSK(build_helper.into())
+                }
+            });
+
         Self {
             key: base_integer_key,
-            wopbs_key,
             cpk_key_switching_key_material,
             compression_key,
             decompression_key,
+            noise_squashing_key,
+            noise_squashing_compression_key,
+            cpk_re_randomization_key_switching_key_material,
         }
     }
 
@@ -298,7 +443,7 @@ impl IntegerServerKey {
 
     pub(in crate::high_level_api) fn cpk_casting_key(
         &self,
-    ) -> Option<crate::integer::key_switching_key::KeySwitchingKeyView> {
+    ) -> Option<crate::integer::key_switching_key::KeySwitchingKeyView<'_>> {
         self.cpk_key_switching_key_material.as_ref().map(|k| {
             crate::integer::key_switching_key::KeySwitchingKeyView::from_keyswitching_key_material(
                 k.as_view(),
@@ -308,9 +453,42 @@ impl IntegerServerKey {
         })
     }
 
+    pub(in crate::high_level_api) fn re_randomization_cpk_casting_key(
+        &self,
+    ) -> Option<crate::integer::key_switching_key::KeySwitchingKeyMaterialView<'_>> {
+        self.cpk_re_randomization_key_switching_key_material
+            .as_ref()
+            .and_then(|key| match key {
+                ReRandomizationKeySwitchingKey::UseCPKEncryptionKSK => self
+                    .cpk_key_switching_key_material
+                    .as_ref()
+                    .map(|k| k.as_view()),
+                ReRandomizationKeySwitchingKey::DedicatedKSK(key_switching_key_material) => {
+                    Some(key_switching_key_material.as_view())
+                }
+            })
+    }
+
     pub(in crate::high_level_api) fn message_modulus(&self) -> MessageModulus {
         self.key.message_modulus()
     }
+}
+
+#[cfg(feature = "gpu")]
+pub struct IntegerCudaServerKey {
+    pub(crate) key: crate::integer::gpu::CudaServerKey,
+    #[allow(dead_code)]
+    pub(crate) cpk_key_switching_key_material:
+        Option<crate::integer::gpu::key_switching_key::CudaKeySwitchingKeyMaterial>,
+    pub(crate) compression_key:
+        Option<crate::integer::gpu::list_compression::server_keys::CudaCompressionKey>,
+    pub(crate) decompression_key:
+        Option<crate::integer::gpu::list_compression::server_keys::CudaDecompressionKey>,
+    pub(crate) noise_squashing_key:
+        Option<crate::integer::gpu::noise_squashing::keys::CudaNoiseSquashingKey>,
+    pub(crate) noise_squashing_compression_key: Option<
+        crate::integer::gpu::list_compression::server_keys::CudaNoiseSquashingCompressionKey,
+    >,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, Versionize)]
@@ -321,20 +499,15 @@ pub struct IntegerCompressedServerKey {
         Option<crate::integer::key_switching_key::CompressedKeySwitchingKeyMaterial>,
     pub(crate) compression_key: Option<CompressedCompressionKey>,
     pub(crate) decompression_key: Option<CompressedDecompressionKey>,
+    pub(crate) noise_squashing_key: Option<CompressedNoiseSquashingKey>,
+    pub(crate) noise_squashing_compression_key: Option<CompressedNoiseSquashingCompressionKey>,
+    pub(crate) cpk_re_randomization_key_switching_key_material:
+        Option<CompressedReRandomizationKeySwitchingKey>,
 }
 
 impl IntegerCompressedServerKey {
     pub(in crate::high_level_api) fn new(client_key: &IntegerClientKey) -> Self {
         let cks = &client_key.key;
-        assert!(
-            client_key.wopbs_block_parameters.is_none(),
-            "The configuration used to create the ClientKey \
-                   had function evaluation on integers enabled.
-                   This feature requires an additional key that is not
-                   compressible. Thus, It is not possible
-                   to create a CompressedServerKey.
-                   "
-        );
 
         let key = crate::integer::CompressedServerKey::new_radix_compressed_server_key(cks);
 
@@ -353,8 +526,6 @@ impl IntegerCompressedServerKey {
                     build_helper.into()
                 });
 
-        let key = crate::integer::CompressedServerKey::new_radix_compressed_server_key(cks);
-
         let (compression_key, decompression_key) =
             client_key
                 .compression_key
@@ -362,20 +533,62 @@ impl IntegerCompressedServerKey {
                 .map_or((None, None), |compression_private_key| {
                     let (compression_keys, decompression_keys) = client_key
                         .key
-                        .key
                         .new_compressed_compression_decompression_keys(compression_private_key);
 
                     (Some(compression_keys), Some(decompression_keys))
                 });
+
+        let (noise_squashing_key, noise_squashing_compression_key) = client_key
+            .noise_squashing_private_key
+            .as_ref()
+            .map_or((None, None), |noise_squashing_private_key| {
+                let noise_squashing_key =
+                    noise_squashing_private_key.new_compressed_noise_squashing_key(&client_key.key);
+
+                let noise_squashing_compression_key = client_key
+                    .noise_squashing_compression_private_key
+                    .as_ref()
+                    .map(|comp_private_key| {
+                        noise_squashing_private_key
+                            .new_compressed_noise_squashing_compression_key(comp_private_key)
+                    });
+                (Some(noise_squashing_key), noise_squashing_compression_key)
+            });
+
+        let cpk_re_randomization_key_switching_key_material = client_key
+            .re_randomization_ksk_gen_info()
+            .unwrap_display()
+            .map(|key_gen_info| match key_gen_info {
+                ReRandomizationKeyGenerationInfo::UseCPKEncryptionKSK => {
+                    CompressedReRandomizationKeySwitchingKey::UseCPKEncryptionKSK
+                }
+                ReRandomizationKeyGenerationInfo::DedicatedKSK((
+                    input_cpk,
+                    cpk_re_randomization_ksk_params,
+                )) => {
+                    let build_helper =
+                    crate::integer::key_switching_key::CompressedKeySwitchingKeyBuildHelper::new(
+                            (input_cpk, None),
+                            (cks, &key),
+                            cpk_re_randomization_ksk_params,
+                        );
+
+                    CompressedReRandomizationKeySwitchingKey::DedicatedKSK(build_helper.into())
+                }
+            });
 
         Self {
             key,
             cpk_key_switching_key_material,
             compression_key,
             decompression_key,
+            noise_squashing_key,
+            noise_squashing_compression_key,
+            cpk_re_randomization_key_switching_key_material,
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn into_raw_parts(
         self,
     ) -> (
@@ -383,12 +596,28 @@ impl IntegerCompressedServerKey {
         Option<crate::integer::key_switching_key::CompressedKeySwitchingKeyMaterial>,
         Option<CompressedCompressionKey>,
         Option<CompressedDecompressionKey>,
+        Option<CompressedNoiseSquashingKey>,
+        Option<CompressedNoiseSquashingCompressionKey>,
+        Option<CompressedReRandomizationKeySwitchingKey>,
     ) {
+        let Self {
+            key,
+            cpk_key_switching_key_material,
+            compression_key,
+            decompression_key,
+            noise_squashing_key,
+            noise_squashing_compression_key,
+            cpk_re_randomization_key_switching_key_material,
+        } = self;
+
         (
-            self.key,
-            self.cpk_key_switching_key_material,
-            self.compression_key,
-            self.decompression_key,
+            key,
+            cpk_key_switching_key_material,
+            compression_key,
+            decompression_key,
+            noise_squashing_key,
+            noise_squashing_compression_key,
+            cpk_re_randomization_key_switching_key_material,
         )
     }
 
@@ -399,12 +628,20 @@ impl IntegerCompressedServerKey {
         >,
         compression_key: Option<CompressedCompressionKey>,
         decompression_key: Option<CompressedDecompressionKey>,
+        noise_squashing_key: Option<CompressedNoiseSquashingKey>,
+        noise_squashing_compression_key: Option<CompressedNoiseSquashingCompressionKey>,
+        cpk_re_randomization_key_switching_key_material: Option<
+            CompressedReRandomizationKeySwitchingKey,
+        >,
     ) -> Self {
         Self {
             key,
             cpk_key_switching_key_material,
             compression_key,
             decompression_key,
+            noise_squashing_key,
+            noise_squashing_compression_key,
+            cpk_re_randomization_key_switching_key_material,
         }
     }
 
@@ -419,14 +656,31 @@ impl IntegerCompressedServerKey {
             .as_ref()
             .map(CompressedDecompressionKey::decompress);
 
+        let noise_squashing_key = self
+            .noise_squashing_key
+            .as_ref()
+            .map(CompressedNoiseSquashingKey::decompress);
+
+        let noise_squashing_compression_key = self
+            .noise_squashing_compression_key
+            .as_ref()
+            .map(CompressedNoiseSquashingCompressionKey::decompress);
+
+        let cpk_re_randomization_key_switching_key_material = self
+            .cpk_re_randomization_key_switching_key_material
+            .as_ref()
+            .map(CompressedReRandomizationKeySwitchingKey::decompress);
+
         IntegerServerKey {
             key: self.key.decompress(),
-            wopbs_key: None,
             cpk_key_switching_key_material: self.cpk_key_switching_key_material.as_ref().map(
                 crate::integer::key_switching_key::CompressedKeySwitchingKeyMaterial::decompress,
             ),
             compression_key,
             decompression_key,
+            noise_squashing_key,
+            noise_squashing_compression_key,
+            cpk_re_randomization_key_switching_key_material,
         }
     }
 }
@@ -457,6 +711,10 @@ impl IntegerCompactPublicKey {
 
     pub fn from_raw_parts(key: CompactPublicKey) -> Self {
         Self { key }
+    }
+
+    pub fn parameters(&self) -> CompactPublicKeyEncryptionParameters {
+        self.key.parameters()
     }
 }
 
@@ -496,5 +754,342 @@ impl IntegerCompressedCompactPublicKey {
         IntegerCompactPublicKey {
             key: CompressedCompactPublicKey::decompress(&self.key),
         }
+    }
+
+    pub fn parameters(&self) -> CompactPublicKeyEncryptionParameters {
+        self.key.parameters()
+    }
+}
+
+pub struct IntegerServerKeyConformanceParams {
+    pub sk_param: AtomicPatternParameters,
+    pub cpk_param: Option<(
+        CompactPublicKeyEncryptionParameters,
+        ShortintKeySwitchingParameters,
+    )>,
+    pub compression_param: Option<CompressionParameters>,
+    pub noise_squashing_param: Option<NoiseSquashingParameters>,
+    pub noise_squashing_compression_param: Option<NoiseSquashingCompressionParameters>,
+    pub cpk_re_randomization_ksk_params: Option<ShortintKeySwitchingParameters>,
+}
+
+impl<C: Into<Config>> From<C> for IntegerServerKeyConformanceParams {
+    fn from(value: C) -> Self {
+        let config: Config = value.into();
+        Self {
+            sk_param: config.inner.block_parameters,
+            cpk_param: config.inner.dedicated_compact_public_key_parameters,
+            compression_param: config.inner.compression_parameters,
+            noise_squashing_param: config.inner.noise_squashing_parameters,
+            noise_squashing_compression_param: config.inner.noise_squashing_compression_parameters,
+            cpk_re_randomization_ksk_params: config.inner.cpk_re_randomization_ksk_params,
+        }
+    }
+}
+
+impl
+    TryFrom<(
+        AtomicPatternParameters,
+        CompactPublicKeyEncryptionParameters,
+        ShortintKeySwitchingParameters,
+    )> for KeySwitchingKeyConformanceParams
+{
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(
+        (sk_params, cpk_params, ks_params): (
+            AtomicPatternParameters,
+            CompactPublicKeyEncryptionParameters,
+            ShortintKeySwitchingParameters,
+        ),
+    ) -> Result<Self, std::num::TryFromIntError> {
+        let output_lwe_size = match ks_params.destination_key {
+            EncryptionKeyChoice::Big => sk_params
+                .glwe_dimension()
+                .to_equivalent_lwe_dimension(sk_params.polynomial_size()),
+
+            EncryptionKeyChoice::Small => sk_params.lwe_dimension(),
+        }
+        .to_lwe_size();
+
+        let output_ciphertext_modulus =
+            sk_params.ciphertext_modulus_for_key(ks_params.destination_key);
+
+        let cast_rshift = (sk_params.carry_modulus().0.ilog2()
+            + sk_params.message_modulus().0.ilog2()
+            - cpk_params.carry_modulus.0.ilog2()
+            - cpk_params.message_modulus.0.ilog2())
+        .try_into()?;
+
+        Ok(Self {
+            keyswitch_key_conformance_params: LweKeyswitchKeyConformanceParams {
+                decomp_base_log: ks_params.ks_base_log,
+                decomp_level_count: ks_params.ks_level,
+                output_lwe_size,
+                input_lwe_dimension: cpk_params.encryption_lwe_dimension,
+                ciphertext_modulus: output_ciphertext_modulus,
+            },
+            cast_rshift,
+            destination_key: ks_params.destination_key,
+            destination_atomic_pattern: sk_params.atomic_pattern().into(),
+        })
+    }
+}
+
+impl ParameterSetConformant for IntegerServerKey {
+    type ParameterSet = IntegerServerKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self {
+            key,
+            cpk_key_switching_key_material,
+            compression_key,
+            decompression_key,
+            noise_squashing_key,
+            noise_squashing_compression_key,
+            cpk_re_randomization_key_switching_key_material,
+        } = self;
+
+        let cpk_key_switching_key_material_is_ok = match (
+            parameter_set.cpk_param.as_ref(),
+            cpk_key_switching_key_material.as_ref(),
+        ) {
+            (None, None) => true,
+            (Some((cpk_params, ks_params)), Some(cpk_key_switching_key_material)) => {
+                if let Ok(cpk_param) = (parameter_set.sk_param, *cpk_params, *ks_params).try_into()
+                {
+                    cpk_key_switching_key_material.is_conformant(&cpk_param)
+                } else {
+                    return false;
+                }
+            }
+            _ => return false,
+        };
+
+        let compression_is_ok = match (
+            compression_key.as_ref(),
+            decompression_key.as_ref(),
+            parameter_set.compression_param.as_ref(),
+        ) {
+            (None, None, None) => true,
+            (Some(compression_key), Some(decompression_key), Some(compression_param)) => {
+                let compression_param = (parameter_set.sk_param, *compression_param).into();
+
+                compression_key.is_conformant(&compression_param)
+                    && decompression_key.is_conformant(&compression_param)
+            }
+            _ => return false,
+        };
+
+        let noise_squashing_key_is_ok = match (
+            parameter_set.noise_squashing_param.as_ref(),
+            noise_squashing_key.as_ref(),
+        ) {
+            (None, None) => true,
+            (Some(noise_squashing_param), Some(noise_squashing_key)) => {
+                let noise_squashing_param =
+                    (parameter_set.sk_param, *noise_squashing_param).try_into();
+                if let Ok(noise_squashing_param) = noise_squashing_param {
+                    noise_squashing_key.is_conformant(&noise_squashing_param)
+                } else {
+                    return false;
+                }
+            }
+            _ => return false,
+        };
+
+        let noise_squashing_compression_key_is_ok = match (
+            parameter_set.noise_squashing_param.as_ref(),
+            parameter_set.noise_squashing_compression_param.as_ref(),
+            noise_squashing_compression_key.as_ref(),
+        ) {
+            (None | Some(_), None, None) => true,
+            (
+                Some(noise_squashing_parameters),
+                Some(noise_squashing_compression_param),
+                Some(noise_squashing_compression_key),
+            ) => {
+                let noise_squashing_compression_param = (
+                    *noise_squashing_parameters,
+                    *noise_squashing_compression_param,
+                )
+                    .into();
+                noise_squashing_compression_key.is_conformant(&noise_squashing_compression_param)
+            }
+            _ => return false,
+        };
+
+        let cpk_re_randomization_key_is_ok = match (
+            cpk_key_switching_key_material.as_ref(),
+            cpk_re_randomization_key_switching_key_material.as_ref(),
+            parameter_set.cpk_param,
+            parameter_set.cpk_re_randomization_ksk_params,
+        ) {
+            // We need cpk_ksk, to be present when we have the re-randomization key
+            (
+                Some(cpk_ksk),
+                Some(re_rand_ksk),
+                Some((cpk_params, _cpk_ksk_params)),
+                Some(re_rand_ks_params),
+            ) => (parameter_set.sk_param, cpk_params, re_rand_ks_params)
+                .try_into()
+                .is_ok_and(|re_rand_param| {
+                    let key_to_check = match re_rand_ksk {
+                        ReRandomizationKeySwitchingKey::UseCPKEncryptionKSK => cpk_ksk,
+                        ReRandomizationKeySwitchingKey::DedicatedKSK(key) => key,
+                    };
+
+                    key_to_check.is_conformant(&re_rand_param)
+                }),
+            // No re-randomization key and no parameters for the key -> ok
+            (_, None, _, None) => true,
+            _ => false,
+        };
+
+        key.is_conformant(&parameter_set.sk_param)
+            && cpk_key_switching_key_material_is_ok
+            && compression_is_ok
+            && noise_squashing_key_is_ok
+            && noise_squashing_compression_key_is_ok
+            && cpk_re_randomization_key_is_ok
+    }
+}
+
+impl ParameterSetConformant for IntegerCompressedServerKey {
+    type ParameterSet = IntegerServerKeyConformanceParams;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self {
+            key,
+            cpk_key_switching_key_material,
+            compression_key,
+            decompression_key,
+            noise_squashing_key,
+            noise_squashing_compression_key,
+            cpk_re_randomization_key_switching_key_material,
+        } = self;
+
+        let cpk_key_switching_key_material_is_ok = match (
+            parameter_set.cpk_param.as_ref(),
+            cpk_key_switching_key_material.as_ref(),
+        ) {
+            (None, None) => true,
+            (Some((cpk_params, ks_params)), Some(cpk_key_switching_key_material)) => {
+                if let Ok(cpk_param) = (parameter_set.sk_param, *cpk_params, *ks_params).try_into()
+                {
+                    cpk_key_switching_key_material.is_conformant(&cpk_param)
+                } else {
+                    return false;
+                }
+            }
+            _ => return false,
+        };
+
+        let compression_is_ok = match (
+            compression_key.as_ref(),
+            decompression_key.as_ref(),
+            parameter_set.compression_param.as_ref(),
+        ) {
+            (None, None, None) => true,
+            (Some(compression_key), Some(decompression_key), Some(compression_param)) => {
+                let compression_param = (parameter_set.sk_param, *compression_param).into();
+
+                compression_key.is_conformant(&compression_param)
+                    && decompression_key.is_conformant(&compression_param)
+            }
+            _ => return false,
+        };
+
+        let noise_squashing_key_is_ok = match (
+            parameter_set.noise_squashing_param.as_ref(),
+            noise_squashing_key.as_ref(),
+        ) {
+            (None, None) => true,
+            (Some(noise_squashing_param), Some(noise_squashing_key)) => {
+                let noise_squashing_param =
+                    (parameter_set.sk_param, *noise_squashing_param).try_into();
+                if let Ok(noise_squashing_param) = noise_squashing_param {
+                    noise_squashing_key.is_conformant(&noise_squashing_param)
+                } else {
+                    return false;
+                }
+            }
+            _ => return false,
+        };
+
+        let noise_squashing_compression_key_is_ok = match (
+            parameter_set.noise_squashing_param.as_ref(),
+            parameter_set.noise_squashing_compression_param.as_ref(),
+            noise_squashing_compression_key.as_ref(),
+        ) {
+            (None | Some(_), None, None) => true,
+            (
+                Some(noise_squashing_parameters),
+                Some(noise_squashing_compression_param),
+                Some(noise_squashing_compression_key),
+            ) => {
+                let noise_squashing_compression_param = (
+                    *noise_squashing_parameters,
+                    *noise_squashing_compression_param,
+                )
+                    .into();
+                noise_squashing_compression_key.is_conformant(&noise_squashing_compression_param)
+            }
+            _ => return false,
+        };
+
+        let cpk_re_randomization_key_is_ok = match (
+            cpk_key_switching_key_material.as_ref(),
+            cpk_re_randomization_key_switching_key_material.as_ref(),
+            parameter_set.cpk_param,
+            parameter_set.cpk_re_randomization_ksk_params,
+        ) {
+            // We need cpk_ksk, to be present when we have the re-randomization key
+            (
+                Some(cpk_ksk),
+                Some(re_rand_ksk),
+                Some((cpk_params, _cpk_ksk_params)),
+                Some(re_rand_ks_params),
+            ) => (parameter_set.sk_param, cpk_params, re_rand_ks_params)
+                .try_into()
+                .is_ok_and(|re_rand_param| {
+                    let key_to_check = match re_rand_ksk {
+                        CompressedReRandomizationKeySwitchingKey::UseCPKEncryptionKSK => cpk_ksk,
+                        CompressedReRandomizationKeySwitchingKey::DedicatedKSK(key) => key,
+                    };
+
+                    key_to_check.is_conformant(&re_rand_param)
+                }),
+            // No re-randomization key and no parameters for the key -> ok
+            (_, None, _, None) => true,
+            _ => false,
+        };
+
+        key.is_conformant(&parameter_set.sk_param)
+            && cpk_key_switching_key_material_is_ok
+            && compression_is_ok
+            && noise_squashing_key_is_ok
+            && noise_squashing_compression_key_is_ok
+            && cpk_re_randomization_key_is_ok
+    }
+}
+
+impl ParameterSetConformant for IntegerCompactPublicKey {
+    type ParameterSet = CompactPublicKeyEncryptionParameters;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self { key } = self;
+
+        key.is_conformant(parameter_set)
+    }
+}
+
+impl ParameterSetConformant for IntegerCompressedCompactPublicKey {
+    type ParameterSet = CompactPublicKeyEncryptionParameters;
+
+    fn is_conformant(&self, parameter_set: &Self::ParameterSet) -> bool {
+        let Self { key } = self;
+
+        key.is_conformant(parameter_set)
     }
 }

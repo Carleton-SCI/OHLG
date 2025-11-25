@@ -1,6 +1,6 @@
 # OHLG (Oblivious Homomorphic Logic Gates)
 ## Overview
-This repo provides an un-optimized prototype for the Oblivious Homomorphic Logic Gates scheme [1]. The system allows executing an obfuscated circuit on encrypted data, and producing encrypted output. So it basically hides the inputs, the process, and the output from the operator server who does the processing. The system is visualized in the figure below.
+This repo provides an unoptimized prototype for the Oblivious Homomorphic Logic Gates scheme [1]. The system allows executing an obfuscated circuit on encrypted data, and producing encrypted output. So it basically hides the inputs, the process, and the output from the operator server who does the processing. The system is visualized in the figure below.
 ![System Overview figure](Sys_overview.png)
 The system consists of two parties, the client and the server:  
 * **Client**: The client is the owner of the data and the circuit, but with low computing and storage power. It encrypts the data to be processed, encrypts the gates' parameters, serializes the data flow description, and sends them along with the HE bootstrapping key to the server side. The client then decrypts the evaluation results sent back from the server.
@@ -26,15 +26,7 @@ git clone https://github.com/Carleton-SCI/OHLG.git
 ```
 cd OHLG/ohlg
 ```
-4.* **For Windows**, open ```ohlg/Cargo.toml``` and modify the following line in the dependencies
-```
-tfhe = { path = "../tfhe-rs/tfhe", features = [ "boolean", "x86_64-unix" ] }
-```
-to be
-```
-tfhe = { path = "../tfhe-rs/tfhe", features = [ "boolean", "x86_64" ] }
-```
-For Linux, leave it as is.
+
 
 #### Gate benchmarking
 The benchmarking of a single gate performance is implemented in the main binary file ```main.rs```, which can be run through:
@@ -58,6 +50,116 @@ The implementation also allows for choosing the TFHE-io parameters ([link](https
 ```Rust
 let param_choice = "TFHE_RS";
 ```
+
+#### Integer Benchmarking
+The repo also includes benchmarks for `tfhe::shortint` and `tfhe::integer` (Radix) bitwise AND operations.
+
+**Shortint Benchmark**
+This binary benchmarks `tfhe::shortint` bitwise AND operations across different parameter sets (1_1, 2_2, 3_3, 4_4).
+
+To run it:
+```
+cargo run --bin shortint --release
+```
+Sample results:
+```
++--------+--------------+-------------+----------------+--------+
+| Config | Message bits | Carry bits  |    Avg AND     | Result |
++--------+--------------+-------------+----------------+--------+
+|  1_1   |      1       |      1      |       13.69 ms |   1    |
+|  2_2   |      2       |      2      |       19.93 ms |   2    |
+|  3_3   |      3       |      3      |      152.20 ms |   4    |
+|  4_4   |      4       |      4      |     1090.90 ms |   8    |
++--------+--------------+-------------+----------------+--------+
+```
+The `shortint` is the basic building block of the integer framework in TFHE-rs. We are investigating the performance of the 4 main configurations, named after the size of the ciphertext as `message_carry` bits. For example, a 2_2 configuration indicates that the ciphertext has an initial space for 2-bit message and after homomorphic operations it has a space for additional 2-bit carry. If a bitwise operation between two n-bit variables must be done in one operation (i.e. one bootstrapping process), n_n configuration must be used. Although the result does not have a carry, but the internal evaluation methodology uses the full carry's n bits to construct the rotation polynomial.
+
+From the results, it can be seen that in most cases evaluating a bitwise operation between two 3-bit variables (160 ms) is slower compared to evaluating the operation is three 1-bit operations (3 * 14 = 42 ms ) between the two variables. This is because increasing the capacity of the ciphertext requires a significant increase in the underlying TLWE ciphertext and the rotation polynomial/Look up table of the Bootstrapping step. We should stress that while this speed comparison is valid for bitwise operations, it may be not the same for integer arithmetic operations. This is because an n-bit arithmetic (like n-bit multiplication) typically require m 1-bit gates where n>>m. In this case, using the n-bit encoding will be faster.
+
+
+
+**Longint Benchmark**
+This binary benchmarks `tfhe::integer` (Radix) bitwise AND operations. It tests both sequential and parallel execution modes across different block sizes and parameter sets.
+To run it:
+```
+cargo run --bin longint --release
+```
+Sample results:
+```
+Summary (8 samples per cell)
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+| Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted  |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        1_1        |   1    |    no     |       1        |     14.11ms |      0x0001 |      0x0001 |      0x0001 |
+|        1_1        |   2    |    no     |       2        |     27.71ms |      0x0001 |      0x0003 |      0x0001 |
+|        1_1        |   3    |    no     |       3        |     41.43ms |      0x0005 |      0x0003 |      0x0001 |
+|        1_1        |   4    |    no     |       4        |     56.03ms |      0x0005 |      0x0003 |      0x0001 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        1_1        |   1    |    yes    |       1        |     13.87ms |      0x0001 |      0x0001 |      0x0001 |
+|        1_1        |   2    |    yes    |       2        |     15.28ms |      0x0001 |      0x0003 |      0x0001 |
+|        1_1        |   3    |    yes    |       3        |     14.39ms |      0x0005 |      0x0003 |      0x0001 |
+|        1_1        |   4    |    yes    |       4        |     14.62ms |      0x0005 |      0x0003 |      0x0001 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        2_2        |   1    |    no     |       2        |     19.62ms |      0x0001 |      0x0003 |      0x0001 |
+|        2_2        |   2    |    no     |       4        |     39.96ms |      0x0005 |      0x0003 |      0x0001 |
+|        2_2        |   3    |    no     |       6        |     59.38ms |      0x0015 |      0x0033 |      0x0011 |
+|        2_2        |   4    |    no     |       8        |     79.01ms |      0x0055 |      0x0033 |      0x0011 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        2_2        |   1    |    yes    |       2        |     19.44ms |      0x0001 |      0x0003 |      0x0001 |
+|        2_2        |   2    |    yes    |       4        |     20.43ms |      0x0005 |      0x0003 |      0x0001 |
+|        2_2        |   3    |    yes    |       6        |     22.17ms |      0x0015 |      0x0033 |      0x0011 |
+|        2_2        |   4    |    yes    |       8        |     21.88ms |      0x0055 |      0x0033 |      0x0011 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        3_3        |   1    |    no     |       3        |    150.61ms |      0x0005 |      0x0003 |      0x0001 |
+|        3_3        |   2    |    no     |       6        |    302.58ms |      0x0015 |      0x0033 |      0x0011 |
+|        3_3        |   3    |    no     |       9        |    452.37ms |      0x0055 |      0x0033 |      0x0011 |
+|        3_3        |   4    |    no     |       12       |    602.46ms |      0x0A55 |      0x0C33 |      0x0811 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        3_3        |   1    |    yes    |       3        |    149.48ms |      0x0005 |      0x0003 |      0x0001 |
+|        3_3        |   2    |    yes    |       6        |    158.34ms |      0x0015 |      0x0033 |      0x0011 |
+|        3_3        |   3    |    yes    |       9        |    159.47ms |      0x0055 |      0x0033 |      0x0011 |
+|        3_3        |   4    |    yes    |       12       |    161.34ms |      0x0A55 |      0x0C33 |      0x0811 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        4_4        |   1    |    no     |       4        |       1.10s |      0x0005 |      0x0003 |      0x0001 |
+|        4_4        |   2    |    no     |       8        |       2.22s |      0x0055 |      0x0033 |      0x0011 |
+|        4_4        |   3    |    no     |       12       |       3.05s |      0x0A55 |      0x0C33 |      0x0811 |
+|        4_4        |   4    |    no     |       16       |       4.08s |      0xAA55 |      0xCC33 |      0x8811 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        4_4        |   1    |    yes    |       4        |       1.04s |      0x0005 |      0x0003 |      0x0001 |
+|        4_4        |   2    |    yes    |       8        |       1.19s |      0x0055 |      0x0033 |      0x0011 |
+|        4_4        |   3    |    yes    |       12       |       1.17s |      0x0A55 |      0x0C33 |      0x0811 |
+|        4_4        |   4    |    yes    |       16       |       1.25s |      0xAA55 |      0xCC33 |      0x8811 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+```
+The `longint` or simply `integer` is the main crate in TFHE-rs. Its implementation consists fundamentally of blocks of `shortint` where each core block contains a segment of the ciphertext. The higher API covers these details from the user, but an interested user can use the radix interface to fine-tune the block size and number of blocks of the ciphertext. It should be also noted that, by default, the `shortint` blocks of an `integer` are processed independently on different threads. A few important notes to be taken from the results above:  
+1- The effect of threading is significant and it makes the processing of different blocks happen at the same time.
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+| Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted 
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        1_1        |   1    |    no     |       1        |     14.10ms |      0x0001 |      0x0001 |      0x0001 |
+|        1_1        |   4    |    no     |       4        |     56.26ms |      0x0005 |      0x0003 |      0x0001 |
+|        1_1        |   4    |    yes    |       4        |     14.60ms |      0x0005 |      0x0003 |      0x0001 |  
+
+2- An `integer` variable with 1 block takes the same time as the core `shortint`, and the threading has no effec in this case  
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+| Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted 
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        3_3        |   1    |    no     |       3        |    154.17ms |      0x0005 |      0x0003 |      0x0001 |
+|        3_3        |   1    |    yes    |       3        |    153.90ms |      0x0005 |      0x0003 |      0x0001 |  
+
+3- Again, executing n 1-bit bitwise operations (either threaded or not) is faster than executing 1 n-bit operation  
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+| Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted 
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
+|        1_1        |   3    |    no     |       3        |     42.23ms |      0x0005 |      0x0003 |      0x0001 |
+|        1_1        |   3    |    yes    |       3        |     14.36ms |      0x0005 |      0x0003 |      0x0001 |
+|        3_3        |   1    |    no     |       3        |    154.17ms |      0x0005 |      0x0003 |      0x0001 |
+|        3_3        |   1    |    yes    |       3        |    153.90ms |      0x0005 |      0x0003 |      0x0001 |  
+
+
 #### ODM (Oblivious Direct Matching) Application
 The application works as follows:
 1. **Client**
@@ -108,9 +210,14 @@ A docker container can be created and run to test the executables through
 ```
 docker run -it --rm ohlg_bin
 ```
-There are 4 executables that can be tested, to benchmark the obfuscated NAND gate:
+There are 6 executables that can be tested. To benchmark the obfuscated NAND gate:
 ```
 ./ohlg
+```
+To benchmark shortint and longint operations (Please note it may take few miutes up to 10~15 for longint):
+```
+./shortint
+./longint
 ```
 For the ODM application, first use:
 ```
@@ -124,7 +231,7 @@ which asks the user to enter the search character to be encrypted. Then
 sequentially to execute the matching process and decrypt the result.
 For a user interested in modifying rust scripts (```main.rs``` can be modified to test other gates for example), the ```Dockerfile``` is also provided. Modify the rust code as required, then use the docker file to create a new image:
 ```
-docker build -t new_image_name
+docker build -t new_image_name .
 ```
 The new image can be loaded and used following similar steps as above.
 
@@ -135,4 +242,4 @@ This software is built in and on top of Zama's TFHE implementation, for which th
 
 
 # References
-[1] Mahmoud Abdelhafeez Sayed and Mostafa Taha, Oblivious Homomorphic Logic Gates, Journal of Cryptographic Engineering, 2025
+[1] Mahmoud Abdelhafeez Sayed and Mostafa Taha, Oblivious Homomorphic Logic Gates, IEEE Transactions on Dependable and Secure Computing, 2025

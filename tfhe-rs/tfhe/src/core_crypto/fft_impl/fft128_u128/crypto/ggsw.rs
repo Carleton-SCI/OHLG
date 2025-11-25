@@ -4,12 +4,12 @@ use crate::core_crypto::commons::traits::container::Split;
 use crate::core_crypto::commons::traits::contiguous_entity_container::{
     ContiguousEntityContainer, ContiguousEntityContainerMut,
 };
-use crate::core_crypto::commons::utils::izip;
+use crate::core_crypto::commons::utils::izip_eq;
 use crate::core_crypto::entities::*;
 use crate::core_crypto::fft_impl::fft128::crypto::ggsw::update_with_fmadd;
 use crate::core_crypto::prelude::{Container, ContainerMut, SignedDecomposer};
 use aligned_vec::CACHELINE_ALIGN;
-use dyn_stack::{PodStack, ReborrowMut};
+use dyn_stack::PodStack;
 
 #[cfg_attr(feature = "__profiling", inline(never))]
 pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlweLo, ContGlweHi>(
@@ -19,7 +19,7 @@ pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlw
     glwe_lo: &GlweCiphertext<ContGlweLo>,
     glwe_hi: &GlweCiphertext<ContGlweHi>,
     fft: Fft128View<'_>,
-    stack: PodStack<'_>,
+    stack: &mut PodStack,
 ) where
     ContOutLo: ContainerMut<Element = u64>,
     ContOutHi: ContainerMut<Element = u64>,
@@ -34,7 +34,7 @@ pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlw
         glwe_lo: GlweCiphertext<&[u64]>,
         glwe_hi: GlweCiphertext<&[u64]>,
         fft: Fft128View<'_>,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
         // we check that the polynomial sizes match
         debug_assert_eq!(ggsw.polynomial_size(), glwe_lo.polynomial_size());
@@ -63,47 +63,41 @@ pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlw
             ggsw.decomposition_level_count(),
         );
 
-        let (mut output_fft_buffer_re0, stack) =
+        let (output_fft_buffer_re0, stack) =
             stack.make_aligned_raw::<f64>(fourier_poly_size * ggsw.glwe_size().0, align);
-        let (mut output_fft_buffer_re1, stack) =
+        let (output_fft_buffer_re1, stack) =
             stack.make_aligned_raw::<f64>(fourier_poly_size * ggsw.glwe_size().0, align);
-        let (mut output_fft_buffer_im0, stack) =
+        let (output_fft_buffer_im0, stack) =
             stack.make_aligned_raw::<f64>(fourier_poly_size * ggsw.glwe_size().0, align);
-        let (mut output_fft_buffer_im1, mut substack0) =
+        let (output_fft_buffer_im1, substack0) =
             stack.make_aligned_raw::<f64>(fourier_poly_size * ggsw.glwe_size().0, align);
 
         // output_fft_buffer is initially uninitialized, considered to be implicitly zero, to avoid
         // the cost of filling it up with zeros. `is_output_uninit` is set to `false` once
         // it has been fully initialized for the first time.
-        let output_fft_buffer_re0 = &mut *output_fft_buffer_re0;
-        let output_fft_buffer_re1 = &mut *output_fft_buffer_re1;
-        let output_fft_buffer_im0 = &mut *output_fft_buffer_im0;
-        let output_fft_buffer_im1 = &mut *output_fft_buffer_im1;
         let mut is_output_uninit = true;
 
         {
             // ------------------------------------------------------ EXTERNAL PRODUCT IN FOURIER
             // DOMAIN In this section, we perform the external product in the fourier
             // domain, and accumulate the result in the output_fft_buffer variable.
-            let (mut decomposition_states_lo, stack) = substack0
-                .rb_mut()
-                .make_aligned_raw::<u64>(poly_size * glwe_size, align);
-            let (mut decomposition_states_hi, mut substack1) =
+            let (decomposition_states_lo, stack) =
+                substack0.make_aligned_raw::<u64>(poly_size * glwe_size, align);
+            let (decomposition_states_hi, substack1) =
                 stack.make_aligned_raw::<u64>(poly_size * glwe_size, align);
 
-            let shift = 128 - decomposer.base_log * decomposer.level_count;
-
-            for (out_lo, out_hi, in_lo, in_hi) in izip!(
+            for (out_lo, out_hi, in_lo, in_hi) in izip_eq!(
                 &mut *decomposition_states_lo,
                 &mut *decomposition_states_hi,
                 glwe_lo.as_ref(),
                 glwe_hi.as_ref(),
             ) {
                 let input = (*in_lo as u128) | ((*in_hi as u128) << 64);
-                let value = decomposer.closest_representable(input) >> shift;
+                let value = decomposer.init_decomposer_state(input);
                 *out_lo = value as u64;
                 *out_hi = (value >> 64) as u64;
             }
+            // Reborrow to avoid mut slices to be moved
             let decomposition_states_lo = &mut *decomposition_states_lo;
             let decomposition_states_hi = &mut *decomposition_states_hi;
             let mut current_level = decomposer.level_count;
@@ -113,31 +107,27 @@ pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlw
 
             // We loop through the levels (we reverse to match the order of the decomposition
             // iterator.)
-            for ggsw_decomp_matrix in ggsw.into_levels().rev() {
+            for ggsw_decomp_matrix in ggsw.into_levels() {
                 // We retrieve the decomposition of this level.
                 assert_ne!(current_level, 0);
                 let glwe_level = DecompositionLevel(current_level);
                 current_level -= 1;
-                let (mut glwe_decomp_term_lo, stack) = substack1
-                    .rb_mut()
-                    .make_aligned_raw::<u64>(poly_size * glwe_size, align);
-                let (mut glwe_decomp_term_hi, mut substack2) =
+                let (glwe_decomp_term_lo, stack) =
+                    substack1.make_aligned_raw::<u64>(poly_size * glwe_size, align);
+                let (glwe_decomp_term_hi, substack2) =
                     stack.make_aligned_raw::<u64>(poly_size * glwe_size, align);
 
                 let base_log = decomposer.base_log;
 
                 collect_next_term_split(
-                    &mut glwe_decomp_term_lo,
-                    &mut glwe_decomp_term_hi,
+                    glwe_decomp_term_lo,
+                    glwe_decomp_term_hi,
                     decomposition_states_lo,
                     decomposition_states_hi,
                     mod_b_mask_lo,
                     mod_b_mask_hi,
                     base_log,
                 );
-
-                let glwe_decomp_term_lo = &mut *glwe_decomp_term_lo;
-                let glwe_decomp_term_hi = &mut *glwe_decomp_term_hi;
 
                 let glwe_decomp_term_lo = GlweCiphertextView::from_container(
                     &*glwe_decomp_term_lo,
@@ -163,23 +153,23 @@ pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlw
                 //
                 //        t = 1                           t = 2                     ...
 
-                for (ggsw_row, glwe_poly_lo, glwe_poly_hi) in izip!(
+                for (ggsw_row, glwe_poly_lo, glwe_poly_hi) in izip_eq!(
                     ggsw_decomp_matrix.into_rows(),
                     glwe_decomp_term_lo.as_polynomial_list().iter(),
                     glwe_decomp_term_hi.as_polynomial_list().iter(),
                 ) {
                     let len = fourier_poly_size;
-                    let stack = substack2.rb_mut();
-                    let (mut fourier_re0, stack) = stack.make_aligned_raw::<f64>(len, align);
-                    let (mut fourier_re1, stack) = stack.make_aligned_raw::<f64>(len, align);
-                    let (mut fourier_im0, stack) = stack.make_aligned_raw::<f64>(len, align);
-                    let (mut fourier_im1, _) = stack.make_aligned_raw::<f64>(len, align);
+                    let stack = &mut *substack2;
+                    let (fourier_re0, stack) = stack.make_aligned_raw::<f64>(len, align);
+                    let (fourier_re1, stack) = stack.make_aligned_raw::<f64>(len, align);
+                    let (fourier_im0, stack) = stack.make_aligned_raw::<f64>(len, align);
+                    let (fourier_im1, _) = stack.make_aligned_raw::<f64>(len, align);
                     // We perform the forward fft transform for the glwe polynomial
                     fft.forward_as_integer_split(
-                        &mut fourier_re0,
-                        &mut fourier_re1,
-                        &mut fourier_im0,
-                        &mut fourier_im1,
+                        fourier_re0,
+                        fourier_re1,
+                        fourier_im0,
+                        fourier_im1,
                         glwe_poly_lo.as_ref(),
                         glwe_poly_hi.as_ref(),
                     );
@@ -192,10 +182,10 @@ pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlw
                         output_fft_buffer_im0,
                         output_fft_buffer_im1,
                         ggsw_row,
-                        &fourier_re0,
-                        &fourier_re1,
-                        &fourier_im0,
-                        &fourier_im1,
+                        fourier_re0,
+                        fourier_re1,
+                        fourier_im0,
+                        fourier_im1,
                         is_output_uninit,
                         fourier_poly_size,
                     );
@@ -212,7 +202,7 @@ pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlw
         //
         // We iterate over the polynomials in the output.
         if !is_output_uninit {
-            for (mut out_lo, mut out_hi, fourier_re0, fourier_re1, fourier_im0, fourier_im1) in izip!(
+            for (mut out_lo, mut out_hi, fourier_re0, fourier_re1, fourier_im0, fourier_im1) in izip_eq!(
                 out_lo.as_mut_polynomial_list().iter_mut(),
                 out_hi.as_mut_polynomial_list().iter_mut(),
                 output_fft_buffer_re0.into_chunks(fourier_poly_size),
@@ -227,7 +217,7 @@ pub fn add_external_product_assign_split<ContOutLo, ContOutHi, ContGgsw, ContGlw
                     fourier_re1,
                     fourier_im0,
                     fourier_im1,
-                    substack0.rb_mut(),
+                    substack0,
                 );
             }
         }
@@ -303,7 +293,7 @@ fn collect_next_term_split_avx512(
             let base_log_complement = simd.splat_u64x8(64u64.wrapping_sub(base_log));
             let base_log = simd.splat_u64x8(base_log);
 
-            for (out_lo, out_hi, state_lo, state_hi) in izip!(
+            for (out_lo, out_hi, state_lo, state_hi) in izip_eq!(
                 glwe_decomp_term_lo,
                 glwe_decomp_term_hi,
                 decomposition_states_lo,
@@ -435,7 +425,7 @@ fn collect_next_term_split_avx2(
             let base_log_complement = simd.splat_u64x4(64u64.wrapping_sub(base_log));
             let base_log = simd.splat_u64x4(base_log);
 
-            for (out_lo, out_hi, state_lo, state_hi) in izip!(
+            for (out_lo, out_hi, state_lo, state_hi) in izip_eq!(
                 glwe_decomp_term_lo,
                 glwe_decomp_term_hi,
                 decomposition_states_lo,
@@ -517,7 +507,7 @@ fn collect_next_term_split_scalar(
     base_log: usize,
 ) {
     assert!(base_log < 128);
-    for (out_lo, out_hi, state_lo, state_hi) in izip!(
+    for (out_lo, out_hi, state_lo, state_hi) in izip_eq!(
         glwe_decomp_term_lo,
         glwe_decomp_term_hi,
         decomposition_states_lo,
@@ -613,6 +603,9 @@ fn collect_next_term_split(
 }
 
 /// This cmux mutates both ct1 and ct0. The result is in ct0 after the method was called.
+///
+/// # Panics
+/// This will panic if ct0_lo, ct0_hi, ct1_lo and ct1_hi are not of the same size
 pub fn cmux_split<ContCt0Lo, ContCt0Hi, ContCt1Lo, ContCt1Hi, ContGgsw>(
     ct0_lo: &mut GlweCiphertext<ContCt0Lo>,
     ct0_hi: &mut GlweCiphertext<ContCt0Hi>,
@@ -620,7 +613,7 @@ pub fn cmux_split<ContCt0Lo, ContCt0Hi, ContCt1Lo, ContCt1Hi, ContGgsw>(
     ct1_hi: &mut GlweCiphertext<ContCt1Hi>,
     ggsw: &Fourier128GgswCiphertext<ContGgsw>,
     fft: Fft128View<'_>,
-    stack: PodStack<'_>,
+    stack: &mut PodStack,
 ) where
     ContCt0Lo: ContainerMut<Element = u64>,
     ContCt0Hi: ContainerMut<Element = u64>,
@@ -635,9 +628,9 @@ pub fn cmux_split<ContCt0Lo, ContCt0Hi, ContCt1Lo, ContCt1Hi, ContGgsw>(
         mut ct1_hi: GlweCiphertext<&mut [u64]>,
         ggsw: Fourier128GgswCiphertext<&[f64]>,
         fft: Fft128View<'_>,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
-        for (c1_lo, c1_hi, c0_lo, c0_hi) in izip!(
+        for (c1_lo, c1_hi, c0_lo, c0_hi) in izip_eq!(
             ct1_lo.as_mut(),
             ct1_hi.as_mut(),
             ct0_lo.as_ref(),

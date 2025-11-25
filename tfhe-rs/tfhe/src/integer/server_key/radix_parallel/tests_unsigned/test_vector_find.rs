@@ -10,40 +10,41 @@ use super::{
     ExpectedDegrees, ExpectedNoiseLevels, MAX_VEC_LEN, NB_CTXT,
 };
 use crate::integer::server_key::MatchValues;
-use crate::integer::tests::create_parametrized_test;
+use crate::integer::tests::create_parameterized_test;
 use rand::prelude::*;
 
 #[cfg(tarpaulin)]
 use crate::shortint::parameters::coverage_parameters::*;
+use crate::shortint::parameters::test_params::*;
 use crate::shortint::parameters::*;
 
-create_parametrized_test!(integer_unchecked_match_value);
-create_parametrized_test!(integer_unchecked_match_value_or);
-create_parametrized_test!(integer_unchecked_contains);
-create_parametrized_test!(integer_unchecked_contains_clear);
-create_parametrized_test!(integer_unchecked_is_in_clears);
-create_parametrized_test!(integer_unchecked_index_in_clears);
-create_parametrized_test!(integer_unchecked_first_index_in_clears);
-create_parametrized_test!(integer_unchecked_index_of);
-create_parametrized_test!(integer_unchecked_index_of_clear);
-create_parametrized_test!(integer_unchecked_first_index_of);
-create_parametrized_test!(integer_unchecked_first_index_of_clear);
+create_parameterized_test!(integer_unchecked_match_value);
+create_parameterized_test!(integer_unchecked_match_value_or);
+create_parameterized_test!(integer_unchecked_contains);
+create_parameterized_test!(integer_unchecked_contains_clear);
+create_parameterized_test!(integer_unchecked_is_in_clears);
+create_parameterized_test!(integer_unchecked_index_in_clears);
+create_parameterized_test!(integer_unchecked_first_index_in_clears);
+create_parameterized_test!(integer_unchecked_index_of);
+create_parameterized_test!(integer_unchecked_index_of_clear);
+create_parameterized_test!(integer_unchecked_first_index_of);
+create_parameterized_test!(integer_unchecked_first_index_of_clear);
 
-create_parametrized_test!(integer_default_match_value);
-create_parametrized_test!(integer_default_match_value_or);
-create_parametrized_test!(integer_default_contains);
-create_parametrized_test!(integer_default_contains_clear);
-create_parametrized_test!(integer_default_is_in_clears);
-create_parametrized_test!(integer_default_index_in_clears);
-create_parametrized_test!(integer_default_first_index_in_clears);
-create_parametrized_test!(integer_default_index_of);
-create_parametrized_test!(integer_default_index_of_clear);
-create_parametrized_test!(integer_default_first_index_of);
-create_parametrized_test!(integer_default_first_index_of_clear);
+create_parameterized_test!(integer_default_match_value);
+create_parameterized_test!(integer_default_match_value_or);
+create_parameterized_test!(integer_default_contains);
+create_parameterized_test!(integer_default_contains_clear);
+create_parameterized_test!(integer_default_is_in_clears);
+create_parameterized_test!(integer_default_index_in_clears);
+create_parameterized_test!(integer_default_first_index_in_clears);
+create_parameterized_test!(integer_default_index_of);
+create_parameterized_test!(integer_default_index_of_clear);
+create_parameterized_test!(integer_default_first_index_of);
+create_parameterized_test!(integer_default_first_index_of_clear);
 
 fn integer_unchecked_match_value<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_match_value_parallelized);
     unchecked_match_value_test_case(param, executor);
@@ -51,7 +52,7 @@ where
 
 fn integer_unchecked_match_value_or<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_match_value_or_parallelized);
     unchecked_match_value_or_test_case(param, executor);
@@ -59,7 +60,7 @@ where
 
 fn integer_unchecked_contains<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_contains_parallelized);
     unchecked_contains_test_case(param, executor);
@@ -67,7 +68,7 @@ where
 
 fn integer_unchecked_contains_clear<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_contains_clear_parallelized);
     unchecked_contains_clear_test_case(param, executor);
@@ -75,7 +76,7 @@ where
 
 fn integer_unchecked_is_in_clears<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_is_in_clears_parallelized);
     unchecked_is_in_clears_test_case(param, executor);
@@ -83,7 +84,7 @@ where
 
 fn integer_unchecked_index_in_clears<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_index_in_clears_parallelized);
     unchecked_index_in_clears_test_case(param, executor);
@@ -91,7 +92,7 @@ where
 
 fn integer_unchecked_first_index_in_clears<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor =
         CpuFunctionExecutor::new(&ServerKey::unchecked_first_index_in_clears_parallelized);
@@ -100,7 +101,7 @@ where
 
 fn integer_unchecked_index_of<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_index_of_parallelized);
     unchecked_index_of_test_case(param, executor);
@@ -108,7 +109,7 @@ where
 
 fn integer_unchecked_index_of_clear<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_index_of_clear_parallelized);
     unchecked_index_of_clear_test_case(param, executor);
@@ -116,7 +117,7 @@ where
 
 fn integer_unchecked_first_index_of<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_first_index_of_parallelized);
     unchecked_first_index_of_test_case(param, executor);
@@ -124,7 +125,7 @@ where
 
 fn integer_unchecked_first_index_of_clear<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor =
         CpuFunctionExecutor::new(&ServerKey::unchecked_first_index_of_clear_parallelized);
@@ -135,7 +136,7 @@ where
 
 fn integer_default_match_value<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::match_value_parallelized);
     default_match_value_test_case(param, executor);
@@ -143,7 +144,7 @@ where
 
 fn integer_default_match_value_or<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::match_value_or_parallelized);
     default_match_value_or_test_case(param, executor);
@@ -151,7 +152,7 @@ where
 
 fn integer_default_contains<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::contains_parallelized);
     default_contains_test_case(param, executor);
@@ -159,7 +160,7 @@ where
 
 fn integer_default_contains_clear<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::contains_clear_parallelized);
     default_contains_clear_test_case(param, executor);
@@ -167,7 +168,7 @@ where
 
 fn integer_default_is_in_clears<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::is_in_clears_parallelized);
     default_is_in_clears_test_case(param, executor);
@@ -175,7 +176,7 @@ where
 
 fn integer_default_index_in_clears<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::index_in_clears_parallelized);
     default_index_in_clears_test_case(param, executor);
@@ -183,7 +184,7 @@ where
 
 fn integer_default_first_index_in_clears<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::first_index_in_clears_parallelized);
     default_first_index_in_clears_test_case(param, executor);
@@ -191,7 +192,7 @@ where
 
 fn integer_default_index_of<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::index_of_parallelized);
     default_index_of_test_case(param, executor);
@@ -199,7 +200,7 @@ where
 
 fn integer_default_index_of_clear<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::index_of_clear_parallelized);
     default_index_of_clear_test_case(param, executor);
@@ -207,7 +208,7 @@ where
 
 fn integer_default_first_index_of<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::first_index_of_parallelized);
     default_first_index_of_test_case(param, executor);
@@ -215,7 +216,7 @@ where
 
 fn integer_default_first_index_of_clear<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::first_index_of_clear_parallelized);
     default_first_index_of_clear_test_case(param, executor);
@@ -342,7 +343,7 @@ fn draw_unique_randoms(
             special_value,
             modulus,
         );
-    };
+    }
 
     let mut numbers = unique_numbers.into_iter().collect::<Vec<u64>>();
     for _ in 0..occurrence_count.saturating_sub(1) {
@@ -355,7 +356,7 @@ fn draw_unique_randoms(
 
 pub(crate) fn unchecked_match_value_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a RadixCiphertext, &'a MatchValues<u64>),
         (RadixCiphertext, BooleanBlock),
@@ -396,7 +397,7 @@ where
             expected_degrees.panic_if_any_is_not_equal(&result);
             expected_noise_level.panic_if_any_is_not_equal(&result);
             assert_eq!(is_ok.0.degree.get(), 0);
-            assert_eq!(is_ok.0.noise_level.get(), 0);
+            assert_eq!(is_ok.0.noise_level().get(), 0);
 
             assert_eq!(cks.decrypt::<u64>(&result), 0);
             assert!(!cks.decrypt_bool(&is_ok));
@@ -405,7 +406,7 @@ where
 
     // LUT with only 1 possible output value, that requires more block than the input
     {
-        let block_msg_modulus = cks.parameters().message_modulus().0 as u64;
+        let block_msg_modulus = cks.parameters().message_modulus().0;
 
         let vec = (0..block_msg_modulus)
             .map(|input| (input, u64::MAX))
@@ -455,11 +456,42 @@ where
 
         panic_if_any_block_is_not_clean_or_trivial(&result, &cks);
         assert_eq!(is_ok.0.degree, Degree::new(1));
-        assert_eq!(is_ok.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_ok.0.noise_level(), NoiseLevel::NOMINAL);
 
         let result = cks.decrypt::<u64>(&result);
         let is_ok = cks.decrypt_bool(&is_ok);
+        assert_eq!(
+            result, expected_result,
+            "Invalid match output: for input {clear} and match values: {lut:?}"
+        );
+        assert_eq!(is_ok, expected_is_ok);
+    }
 
+    // Test that the data is properly unpacked
+    {
+        let msg_mod = cks.parameters().message_modulus().0;
+        let clear = rng.gen_range(0..modulus);
+        // The output value is such that it is on the message part of the second packed block
+        // [msg4|msg3] [msg1|msg0], so in msg3, if the result is not properly unpacked then its
+        // going to be wrong
+        let lut = vec![(clear, msg_mod * msg_mod)];
+
+        let ct = cks.encrypt(clear);
+
+        let (expected_result, expected_is_ok) = lut
+            .iter()
+            .find(|(input, _)| *input == clear)
+            .map_or((0, false), |(_, output)| (*output, true));
+
+        let lut = MatchValues::new(lut).unwrap();
+        let (result, is_ok) = executor.execute((&ct, &lut));
+
+        panic_if_any_block_is_not_clean_or_trivial(&result, &cks);
+        assert_eq!(is_ok.0.degree, Degree::new(1));
+        assert_eq!(is_ok.0.noise_level(), NoiseLevel::NOMINAL);
+
+        let result = cks.decrypt::<u64>(&result);
+        let is_ok = cks.decrypt_bool(&is_ok);
         assert_eq!(
             result, expected_result,
             "Invalid match output: for input {clear} and match values: {lut:?}"
@@ -470,7 +502,7 @@ where
 
 pub(crate) fn default_match_value_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a RadixCiphertext, &'a MatchValues<u64>),
         (RadixCiphertext, BooleanBlock),
@@ -530,7 +562,7 @@ where
 
         panic_if_any_block_is_not_clean_or_trivial(&result, &cks);
         assert_eq!(is_ok.0.degree, Degree::new(1));
-        assert_eq!(is_ok.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_ok.0.noise_level(), NoiseLevel::NOMINAL);
 
         let result = cks.decrypt::<u64>(&result);
         let is_ok = cks.decrypt_bool(&is_ok);
@@ -545,7 +577,7 @@ where
 
 pub(crate) fn unchecked_match_value_or_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a RadixCiphertext, &'a MatchValues<u64>, u64), RadixCiphertext>,
 {
     let param = param.into();
@@ -590,7 +622,7 @@ where
 
     // LUT with only 1 possible output value, that requires more block than the input
     {
-        let block_msg_modulus = cks.parameters().message_modulus().0 as u64;
+        let block_msg_modulus = cks.parameters().message_modulus().0;
 
         let vec = (0..block_msg_modulus)
             .map(|input| (input, u64::MAX))
@@ -650,7 +682,7 @@ where
 
 pub(crate) fn default_match_value_or_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a RadixCiphertext, &'a MatchValues<u64>, u64), RadixCiphertext>,
 {
     let param = param.into();
@@ -715,7 +747,7 @@ where
 
 pub(crate) fn unchecked_contains_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a [RadixCiphertext], &'a RadixCiphertext), BooleanBlock>,
 {
     let param = param.into();
@@ -742,7 +774,7 @@ where
 
             assert!(result.is_trivial());
             assert_eq!(result.0.degree, Degree::new(0));
-            assert_eq!(result.0.noise_level, NoiseLevel::ZERO);
+            assert_eq!(result.0.noise_level(), NoiseLevel::ZERO);
             assert!(!cks.decrypt_bool(&result));
         }
     }
@@ -775,7 +807,7 @@ where
         // If the mapping only contains numbers (output) that needs less than NB_CTXT
         // blocks, some trivial zeros will be appended
         assert_eq!(result.0.degree, Degree::new(1));
-        assert_eq!(result.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(result.0.noise_level(), NoiseLevel::NOMINAL);
 
         let result = cks.decrypt_bool(&result);
 
@@ -785,7 +817,7 @@ where
 
 pub(crate) fn default_contains_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a [RadixCiphertext], &'a RadixCiphertext), BooleanBlock>,
 {
     let param = param.into();
@@ -843,7 +875,7 @@ where
         // If the mapping only contains numbers (output) that needs less than NB_CTXT
         // blocks, some trivial zeros will be appended
         assert_eq!(result.0.degree, Degree::new(1));
-        assert_eq!(result.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(result.0.noise_level(), NoiseLevel::NOMINAL);
 
         let result = cks.decrypt_bool(&result);
 
@@ -853,7 +885,7 @@ where
 
 pub(crate) fn unchecked_contains_clear_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a [RadixCiphertext], u64), BooleanBlock>,
 {
     let param = param.into();
@@ -876,7 +908,7 @@ where
 
         assert!(result.is_trivial());
         assert_eq!(result.0.degree, Degree::new(0));
-        assert_eq!(result.0.noise_level, NoiseLevel::ZERO);
+        assert_eq!(result.0.noise_level(), NoiseLevel::ZERO);
         assert!(!cks.decrypt_bool(&result));
     }
 
@@ -907,7 +939,7 @@ where
         // If the mapping only contains numbers (output) that needs less than NB_CTXT
         // blocks, some trivial zeros will be appended
         assert_eq!(result.0.degree, Degree::new(1));
-        assert_eq!(result.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(result.0.noise_level(), NoiseLevel::NOMINAL);
 
         let result = cks.decrypt_bool(&result);
         assert_eq!(result, expected_result);
@@ -916,7 +948,7 @@ where
 
 pub(crate) fn default_contains_clear_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a [RadixCiphertext], u64), BooleanBlock>,
 {
     let param = param.into();
@@ -971,7 +1003,7 @@ where
         // If the mapping only contains numbers (output) that needs less than NB_CTXT
         // blocks, some trivial zeros will be appended
         assert_eq!(result.0.degree, Degree::new(1));
-        assert_eq!(result.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(result.0.noise_level(), NoiseLevel::NOMINAL);
 
         let result = cks.decrypt_bool(&result);
         assert_eq!(result, expected_result);
@@ -980,7 +1012,7 @@ where
 
 pub(crate) fn unchecked_is_in_clears_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a RadixCiphertext, &'a [u64]), BooleanBlock>,
 {
     let param = param.into();
@@ -1003,7 +1035,7 @@ where
 
         assert!(result.is_trivial());
         assert_eq!(result.0.degree, Degree::new(0));
-        assert_eq!(result.0.noise_level, NoiseLevel::ZERO);
+        assert_eq!(result.0.noise_level(), NoiseLevel::ZERO);
         assert!(!cks.decrypt_bool(&result));
     }
 
@@ -1028,7 +1060,7 @@ where
         // If the mapping only contains numbers (output) that needs less than NB_CTXT
         // blocks, some trivial zeros will be appended
         assert_eq!(result.0.degree, Degree::new(1));
-        assert_eq!(result.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(result.0.noise_level(), NoiseLevel::NOMINAL);
 
         let result = cks.decrypt_bool(&result);
         assert_eq!(result, expected_result);
@@ -1037,7 +1069,7 @@ where
 
 pub(crate) fn default_is_in_clears_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a RadixCiphertext, &'a [u64]), BooleanBlock>,
 {
     let param = param.into();
@@ -1086,7 +1118,7 @@ where
         // If the mapping only contains numbers (output) that needs less than NB_CTXT
         // blocks, some trivial zeros will be appended
         assert_eq!(result.0.degree, Degree::new(1));
-        assert_eq!(result.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(result.0.noise_level(), NoiseLevel::NOMINAL);
 
         let result = cks.decrypt_bool(&result);
         assert_eq!(result, expected_result);
@@ -1095,7 +1127,7 @@ where
 
 pub(crate) fn unchecked_index_in_clears_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a RadixCiphertext, &'a [u64]), (RadixCiphertext, BooleanBlock)>,
 {
     let param = param.into();
@@ -1121,7 +1153,7 @@ where
 
         assert!(is_in.is_trivial());
         assert_eq!(is_in.0.degree, Degree::new(0));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::ZERO);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::ZERO);
         assert!(!cks.decrypt_bool(&is_in));
     }
 
@@ -1151,7 +1183,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1160,7 +1192,7 @@ where
 
 pub(crate) fn default_index_in_clears_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a RadixCiphertext, &'a [u64]), (RadixCiphertext, BooleanBlock)>,
 {
     let param = param.into();
@@ -1216,7 +1248,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1225,7 +1257,7 @@ where
 
 pub(crate) fn unchecked_first_index_in_clears_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a RadixCiphertext, &'a [u64]), (RadixCiphertext, BooleanBlock)>,
 {
     let param = param.into();
@@ -1251,7 +1283,7 @@ where
 
         assert!(is_in.is_trivial());
         assert_eq!(is_in.0.degree, Degree::new(0));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::ZERO);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::ZERO);
         assert!(!cks.decrypt_bool(&is_in));
     }
 
@@ -1281,7 +1313,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1290,7 +1322,7 @@ where
 
 pub(crate) fn default_first_index_in_clears_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a RadixCiphertext, &'a [u64]), (RadixCiphertext, BooleanBlock)>,
 {
     let param = param.into();
@@ -1345,7 +1377,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1354,7 +1386,7 @@ where
 
 pub(crate) fn unchecked_index_of_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a [RadixCiphertext], &'a RadixCiphertext),
         (RadixCiphertext, BooleanBlock),
@@ -1383,7 +1415,7 @@ where
 
         assert!(is_in.is_trivial());
         assert_eq!(is_in.0.degree, Degree::new(0));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::ZERO);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::ZERO);
         assert!(!cks.decrypt_bool(&is_in));
     }
 
@@ -1419,7 +1451,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1428,7 +1460,7 @@ where
 
 pub(crate) fn default_index_of_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a [RadixCiphertext], &'a RadixCiphertext),
         (RadixCiphertext, BooleanBlock),
@@ -1494,7 +1526,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1503,7 +1535,7 @@ where
 
 pub(crate) fn unchecked_index_of_clear_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a [RadixCiphertext], u64), (RadixCiphertext, BooleanBlock)>,
 {
     let param = param.into();
@@ -1528,7 +1560,7 @@ where
 
         assert!(is_in.is_trivial());
         assert_eq!(is_in.0.degree, Degree::new(0));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::ZERO);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::ZERO);
         assert!(!cks.decrypt_bool(&is_in));
     }
 
@@ -1563,7 +1595,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1572,7 +1604,7 @@ where
 
 pub(crate) fn default_index_of_clear_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a [RadixCiphertext], u64), (RadixCiphertext, BooleanBlock)>,
 {
     let param = param.into();
@@ -1629,7 +1661,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1638,7 +1670,7 @@ where
 
 pub(crate) fn unchecked_first_index_of_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a [RadixCiphertext], &'a RadixCiphertext),
         (RadixCiphertext, BooleanBlock),
@@ -1667,7 +1699,7 @@ where
 
         assert!(is_in.is_trivial());
         assert_eq!(is_in.0.degree, Degree::new(0));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::ZERO);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::ZERO);
         assert!(!cks.decrypt_bool(&is_in));
     }
 
@@ -1708,7 +1740,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1717,7 +1749,7 @@ where
 
 pub(crate) fn default_first_index_of_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<
         (&'a [RadixCiphertext], &'a RadixCiphertext),
         (RadixCiphertext, BooleanBlock),
@@ -1792,7 +1824,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1801,7 +1833,7 @@ where
 
 pub(crate) fn unchecked_first_index_of_clear_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a [RadixCiphertext], u64), (RadixCiphertext, BooleanBlock)>,
 {
     let param = param.into();
@@ -1826,7 +1858,7 @@ where
 
         assert!(is_in.is_trivial());
         assert_eq!(is_in.0.degree, Degree::new(0));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::ZERO);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::ZERO);
         assert!(!cks.decrypt_bool(&is_in));
     }
 
@@ -1866,7 +1898,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);
@@ -1875,7 +1907,7 @@ where
 
 pub(crate) fn default_first_index_of_clear_test_case<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<(&'a [RadixCiphertext], u64), (RadixCiphertext, BooleanBlock)>,
 {
     let param = param.into();
@@ -1929,7 +1961,7 @@ where
         assert_eq!(index, expected_index as u16);
 
         assert_eq!(is_in.0.degree, Degree::new(1));
-        assert_eq!(is_in.0.noise_level, NoiseLevel::NOMINAL);
+        assert_eq!(is_in.0.noise_level(), NoiseLevel::NOMINAL);
 
         let is_in = cks.decrypt_bool(&is_in);
         assert_eq!(is_in, expected_is_in);

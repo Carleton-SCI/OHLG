@@ -1,4 +1,4 @@
-use crate::core_crypto::commons::utils::izip;
+use crate::core_crypto::commons::utils::izip_eq;
 use crate::core_crypto::prelude::CastFrom;
 use crate::integer::ciphertext::IntegerRadixCiphertext;
 use crate::integer::ServerKey;
@@ -26,11 +26,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 128;
     /// let shift = 2;
@@ -69,11 +69,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 18;
     /// let shift = 4;
@@ -166,7 +166,7 @@ impl ServerKey {
             return;
         }
 
-        let message_modulus = self.key.message_modulus.0 as u64;
+        let message_modulus = self.key.message_modulus.0;
 
         // In the arithmetic shift case we have to pad with the value of the sign bit.
         //
@@ -176,7 +176,7 @@ impl ServerKey {
         let shift_last_block = || {
             let last_block_lut = self.key.generate_lookup_table(|x| {
                 let x = x % message_modulus;
-                let x_sign_bit = x >> (num_bits_in_block - 1) & 1;
+                let x_sign_bit = (x >> (num_bits_in_block - 1)) & 1;
                 let shifted = x >> shift_within_block;
                 // padding is a message full of 1 if sign bit is one
                 // else padding is a zero message
@@ -193,7 +193,7 @@ impl ServerKey {
 
             let pad_block_creator_lut = self.key.generate_lookup_table(|x| {
                 let x = x % message_modulus;
-                let x_sign_bit = x >> (num_bits_in_block - 1) & 1;
+                let x_sign_bit = (x >> (num_bits_in_block - 1)) & 1;
                 // padding is a message full of 1 if sign bit is one
                 // else padding is a zero message
                 (message_modulus - 1) * x_sign_bit
@@ -223,7 +223,7 @@ impl ServerKey {
         // and did the last one separately
         let blocks_to_replace = &mut ct.blocks_mut()[..num_blocks - rotations - 1];
         assert_eq!(partial_blocks.len(), blocks_to_replace.len());
-        for (block, shifted_block) in izip!(blocks_to_replace, partial_blocks) {
+        for (block, shifted_block) in izip_eq!(blocks_to_replace, partial_blocks) {
             *block = shifted_block;
         }
 
@@ -298,7 +298,7 @@ impl ServerKey {
         // and did the last one separately
         let blocks_to_replace = &mut ct.blocks_mut()[..num_blocks - rotations - 1];
         assert_eq!(partial_blocks.len(), blocks_to_replace.len());
-        for (block, shifted_block) in izip!(blocks_to_replace, partial_blocks) {
+        for (block, shifted_block) in izip_eq!(blocks_to_replace, partial_blocks) {
             *block = shifted_block;
         }
 
@@ -320,7 +320,7 @@ impl ServerKey {
         inner_blocks: &[crate::shortint::Ciphertext],
         shift_within_block: u64,
     ) -> Vec<crate::shortint::Ciphertext> {
-        let message_modulus = self.key.message_modulus.0 as u64;
+        let message_modulus = self.key.message_modulus.0;
         let num_bits_in_block = message_modulus.ilog2() as u64;
 
         assert!(shift_within_block < num_bits_in_block);
@@ -374,11 +374,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 128;
     /// let shift = 2;
@@ -419,11 +419,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 18;
     /// let shift = 4;
@@ -470,11 +470,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 21;
     /// let shift = 2;
@@ -519,11 +519,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 13;
     /// let shift = 2;
@@ -592,10 +592,8 @@ impl ServerKey {
                     let current_block = current_block << shift_within_block;
                     let previous_block = previous_block << shift_within_block;
 
-                    let message_of_current_block =
-                        current_block % self.key.message_modulus.0 as u64;
-                    let carry_of_previous_block =
-                        previous_block / self.key.message_modulus.0 as u64;
+                    let message_of_current_block = current_block % self.key.message_modulus.0;
+                    let carry_of_previous_block = previous_block / self.key.message_modulus.0;
                     message_of_current_block + carry_of_previous_block
                 });
             let partial_blocks = ct.blocks()[rotations..]
@@ -627,7 +625,7 @@ impl ServerKey {
         ct.blocks_mut()[rotations] = block;
         let blocks_to_replace = &mut ct.blocks_mut()[rotations + 1..];
         assert_eq!(partial_blocks.len(), blocks_to_replace.len());
-        for (block, shifted_block) in izip!(blocks_to_replace, partial_blocks) {
+        for (block, shifted_block) in izip_eq!(blocks_to_replace, partial_blocks) {
             *block = shifted_block;
         }
         debug_assert!(ct.block_carries_are_empty());
@@ -650,11 +648,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 21;
     /// let shift = 2;
@@ -695,11 +693,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let msg = 13;
     /// let shift = 2;

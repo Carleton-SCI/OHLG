@@ -4,7 +4,7 @@ use crate::core_crypto::commons::math::random::DynamicDistribution as RustDynami
 use crate::core_crypto::commons::numeric::UnsignedInteger;
 use std::os::raw::c_int;
 
-// f64 will be aligned as a u64, use the same alignement
+// f64 will be aligned as a u64, use the same alignment
 #[repr(u64)]
 #[derive(Clone, Copy)]
 pub enum DynamicDistributionTag {
@@ -135,8 +135,7 @@ pub unsafe extern "C" fn core_crypto_lwe_secret_key(
         let seed_high_bytes: u128 = seed_high_bytes.into();
         let seed = (seed_high_bytes << 64) | seed_low_bytes;
 
-        let mut secret_generator =
-            SecretRandomGenerator::<ActivatedRandomGenerator>::new(Seed(seed));
+        let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(Seed(seed));
 
         // Create the LweSecretKey
         let output_lwe_sk_slice = std::slice::from_raw_parts_mut(output_lwe_sk_ptr, lwe_sk_dim);
@@ -170,8 +169,8 @@ pub unsafe extern "C" fn core_crypto_lwe_encrypt(
         let seed = (seed_high_bytes << 64) | seed_low_bytes;
 
         let seed = Seed(seed);
-        let mut deterministic_seeder = DeterministicSeeder::<ActivatedRandomGenerator>::new(seed);
-        let mut encryption_generator = EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+        let mut deterministic_seeder = DeterministicSeeder::<DefaultRandomGenerator>::new(seed);
+        let mut encryption_generator = EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
             deterministic_seeder.seed(),
             &mut deterministic_seeder,
         );
@@ -196,7 +195,7 @@ pub unsafe extern "C" fn core_crypto_lwe_encrypt(
 #[no_mangle]
 pub unsafe extern "C" fn core_crypto_ggsw_encrypt(
     output_ct_ptr: *mut u64,
-    pt: u64,
+    cleartext: u64,
     glwe_sk_ptr: *const u64,
     glwe_sk_dim: usize,
     poly_size: usize,
@@ -219,13 +218,13 @@ pub unsafe extern "C" fn core_crypto_ggsw_encrypt(
         let seed = (seed_high_bytes << 64) | seed_low_bytes;
 
         let seed = Seed(seed);
-        let mut deterministic_seeder = DeterministicSeeder::<ActivatedRandomGenerator>::new(seed);
-        let mut encryption_generator = EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+        let mut deterministic_seeder = DeterministicSeeder::<DefaultRandomGenerator>::new(seed);
+        let mut encryption_generator = EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
             deterministic_seeder.seed(),
             &mut deterministic_seeder,
         );
 
-        let plaintext = Plaintext(pt);
+        let cleartext = Cleartext(cleartext);
         let output_ct = std::slice::from_raw_parts_mut(
             output_ct_ptr,
             ggsw_ciphertext_size(
@@ -248,7 +247,7 @@ pub unsafe extern "C" fn core_crypto_ggsw_encrypt(
         encrypt_constant_ggsw_ciphertext(
             &glwe_sk,
             &mut ct,
-            plaintext,
+            cleartext,
             glwe_noise_distribution,
             &mut encryption_generator,
         );
@@ -379,9 +378,9 @@ pub unsafe extern "C" fn core_crypto_par_generate_lwe_bootstrapping_key(
         let seed = (seed_high_bytes << 64) | seed_low_bytes;
 
         let mut deterministic_seeder =
-            DeterministicSeeder::<ActivatedRandomGenerator>::new(Seed(seed));
+            DeterministicSeeder::<DefaultRandomGenerator>::new(Seed(seed));
         let mut encryption_random_generator =
-            EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+            EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
                 deterministic_seeder.seed(),
                 &mut deterministic_seeder,
             );
@@ -463,9 +462,9 @@ pub unsafe extern "C" fn core_crypto_par_generate_lwe_multi_bit_bootstrapping_ke
         let seed = (seed_high_bytes << 64) | seed_low_bytes;
 
         let mut deterministic_seeder =
-            DeterministicSeeder::<ActivatedRandomGenerator>::new(Seed(seed));
+            DeterministicSeeder::<DefaultRandomGenerator>::new(Seed(seed));
         let mut encryption_random_generator =
-            EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+            EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
                 deterministic_seeder.seed(),
                 &mut deterministic_seeder,
             );
@@ -542,9 +541,9 @@ pub unsafe extern "C" fn core_crypto_par_generate_lwe_keyswitch_key(
         let seed = (seed_high_bytes << 64) | seed_low_bytes;
 
         let mut deterministic_seeder =
-            DeterministicSeeder::<ActivatedRandomGenerator>::new(Seed(seed));
+            DeterministicSeeder::<DefaultRandomGenerator>::new(Seed(seed));
         let mut encryption_random_generator =
-            EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+            EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
                 deterministic_seeder.seed(),
                 &mut deterministic_seeder,
             );
@@ -618,9 +617,9 @@ pub unsafe extern "C" fn core_crypto_par_generate_lwe_private_functional_keyswit
         let seed = (seed_high_bytes << 64) | seed_low_bytes;
 
         let mut deterministic_seeder =
-            DeterministicSeeder::<ActivatedRandomGenerator>::new(Seed(seed));
+            DeterministicSeeder::<DefaultRandomGenerator>::new(Seed(seed));
         let mut encryption_random_generator =
-            EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+            EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
                 deterministic_seeder.seed(),
                 &mut deterministic_seeder,
             );

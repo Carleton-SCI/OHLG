@@ -1,5 +1,11 @@
+use std::ops::RangeBounds;
+
+use crate::error::InvalidRangeError;
+pub use crate::high_level_api::re_randomization::ReRandomize;
 use crate::high_level_api::ClientKey;
-use crate::FheBool;
+use crate::{FheBool, Tag};
+
+use super::compressed_ciphertext_list::HlExpandable;
 
 /// Trait used to have a generic way of creating a value of a FHE type
 /// from a native value.
@@ -107,28 +113,6 @@ pub trait FheMax<Rhs = Self> {
     fn max(&self, other: Rhs) -> Self::Output;
 }
 
-/// Trait required to apply univariate function over homomorphic types.
-///
-/// A `univariate function` is a function with one variable, e.g., of the form f(x).
-pub trait FheBootstrap
-where
-    Self: Sized,
-{
-    /// Compute a function over an encrypted message, and returns a new encrypted value containing
-    /// the result.
-    fn map<F: Fn(u64) -> u64>(&self, func: F) -> Self;
-
-    /// Compute a function over the encrypted message.
-    fn apply<F: Fn(u64) -> u64>(&mut self, func: F);
-}
-
-#[doc(hidden)]
-pub trait FheNumberConstant {
-    const MIN: u64;
-    const MAX: u64;
-    const MODULUS: u64;
-}
-
 pub trait RotateLeft<Rhs = Self> {
     type Output;
 
@@ -165,6 +149,26 @@ pub trait IfThenElse<Ciphertext> {
     }
 }
 
+pub trait ScalarIfThenElse<Lhs, Rhs> {
+    type Output;
+
+    fn scalar_if_then_else(&self, value_true: Lhs, value_false: Rhs) -> Self::Output;
+
+    fn scalar_select(&self, value_true: Lhs, value_false: Rhs) -> Self::Output {
+        self.scalar_if_then_else(value_true, value_false)
+    }
+
+    fn scalar_cmux(&self, value_true: Lhs, value_false: Rhs) -> Self::Output {
+        self.scalar_if_then_else(value_true, value_false)
+    }
+}
+
+pub trait Flip<Lhs, Rhs> {
+    type Output;
+
+    fn flip(&self, lhs: Lhs, rhs: Rhs) -> (Self::Output, Self::Output);
+}
+
 pub trait OverflowingAdd<Rhs> {
     type Output;
 
@@ -181,4 +185,173 @@ pub trait OverflowingMul<Rhs> {
     type Output;
 
     fn overflowing_mul(self, rhs: Rhs) -> (Self::Output, FheBool);
+}
+
+pub trait OverflowingNeg {
+    type Output;
+
+    fn overflowing_neg(self) -> (Self::Output, FheBool);
+}
+
+pub trait BitSlice<Bounds> {
+    type Output;
+
+    fn bitslice<R>(self, range: R) -> Result<Self::Output, InvalidRangeError>
+    where
+        R: RangeBounds<Bounds>;
+}
+
+pub trait Tagged {
+    fn tag(&self) -> &Tag;
+
+    fn tag_mut(&mut self) -> &mut Tag;
+}
+
+pub trait CiphertextList {
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool;
+    fn get_kind_of(&self, index: usize) -> Option<crate::FheTypes>;
+    fn get<T>(&self, index: usize) -> crate::Result<Option<T>>
+    where
+        T: HlExpandable + Tagged;
+    #[cfg(feature = "gpu")]
+    fn get_decompression_size_on_gpu(&self, index: usize) -> crate::Result<Option<u64>>;
+}
+
+pub trait FheId: Copy + Default {}
+
+pub trait SquashNoise {
+    type Output;
+
+    fn squash_noise(&self) -> crate::Result<Self::Output>;
+}
+
+/// Trait used to have a generic way of waiting Hw accelerator result
+pub trait FheWait {
+    fn wait(&self);
+}
+
+/// Struct used to have a generic way of starting custom Hpu IOp
+#[cfg(feature = "hpu")]
+pub struct HpuHandle<T> {
+    pub native: Vec<T>,
+    pub boolean: Vec<FheBool>,
+    pub imm: Vec<u128>,
+}
+
+#[cfg(feature = "hpu")]
+pub trait FheHpu
+where
+    Self: Sized,
+{
+    fn iop_exec(
+        iop: &tfhe_hpu_backend::prelude::hpu_asm::AsmIOpcode,
+        src: HpuHandle<&Self>,
+    ) -> HpuHandle<Self>;
+}
+
+#[cfg(feature = "gpu")]
+pub trait SizeOnGpu<Rhs = Self> {
+    fn get_size_on_gpu(&self) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait AddSizeOnGpu<Rhs = Self> {
+    fn get_add_size_on_gpu(&self, amount: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait SubSizeOnGpu<Rhs = Self> {
+    fn get_sub_size_on_gpu(&self, amount: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait BitAndSizeOnGpu<Rhs = Self> {
+    fn get_bitand_size_on_gpu(&self, amount: Rhs) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait BitOrSizeOnGpu<Rhs = Self> {
+    fn get_bitor_size_on_gpu(&self, amount: Rhs) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait BitXorSizeOnGpu<Rhs = Self> {
+    fn get_bitxor_size_on_gpu(&self, amount: Rhs) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait BitNotSizeOnGpu {
+    fn get_bitnot_size_on_gpu(&self) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait FheOrdSizeOnGpu<Rhs = Self> {
+    fn get_gt_size_on_gpu(&self, amount: Rhs) -> u64;
+    fn get_lt_size_on_gpu(&self, amount: Rhs) -> u64;
+    fn get_ge_size_on_gpu(&self, amount: Rhs) -> u64;
+    fn get_le_size_on_gpu(&self, amount: Rhs) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait FheMinSizeOnGpu<Rhs = Self> {
+    fn get_min_size_on_gpu(&self, other: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait FheMaxSizeOnGpu<Rhs = Self> {
+    fn get_max_size_on_gpu(&self, other: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait ShlSizeOnGpu<Rhs = Self> {
+    fn get_left_shift_size_on_gpu(&self, other: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait ShrSizeOnGpu<Rhs = Self> {
+    fn get_right_shift_size_on_gpu(&self, other: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait RotateLeftSizeOnGpu<Rhs = Self> {
+    fn get_rotate_left_size_on_gpu(&self, other: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait RotateRightSizeOnGpu<Rhs = Self> {
+    fn get_rotate_right_size_on_gpu(&self, other: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait IfThenElseSizeOnGpu<Ciphertext> {
+    fn get_if_then_else_size_on_gpu(&self, ct_then: &Ciphertext, ct_else: &Ciphertext) -> u64;
+    fn get_select_size_on_gpu(&self, ct_when_true: &Ciphertext, ct_when_false: &Ciphertext) -> u64 {
+        self.get_if_then_else_size_on_gpu(ct_when_true, ct_when_false)
+    }
+    fn get_cmux_size_on_gpu(&self, ct_then: &Ciphertext, ct_else: &Ciphertext) -> u64 {
+        self.get_if_then_else_size_on_gpu(ct_then, ct_else)
+    }
+}
+
+#[cfg(feature = "gpu")]
+pub trait MulSizeOnGpu<Rhs = Self> {
+    fn get_mul_size_on_gpu(&self, other: Rhs) -> u64;
+}
+
+#[cfg(feature = "gpu")]
+pub trait DivSizeOnGpu<Rhs = Self> {
+    fn get_div_size_on_gpu(&self, other: Rhs) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait RemSizeOnGpu<Rhs = Self> {
+    fn get_rem_size_on_gpu(&self, other: Rhs) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait DivRemSizeOnGpu<Rhs = Self> {
+    fn get_div_rem_size_on_gpu(&self, other: Rhs) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait NegSizeOnGpu<Rhs = Self> {
+    fn get_neg_size_on_gpu(&self) -> u64;
+}
+#[cfg(feature = "gpu")]
+pub trait FheEqSizeOnGpu<Rhs = Self> {
+    fn get_eq_size_on_gpu(&self, amount: Rhs) -> u64;
+    fn get_ne_size_on_gpu(&self, amount: Rhs) -> u64;
 }

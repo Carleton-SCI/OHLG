@@ -34,9 +34,8 @@ use rayon::prelude::*;
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let input_lwe_secret_key =
@@ -212,9 +211,8 @@ pub fn keyswitch_lwe_ciphertext_into_glwe_ciphertext<Scalar, KeyCont, InputCont,
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let input_lwe_secret_key =
@@ -405,9 +403,8 @@ pub fn keyswitch_lwe_ciphertext_list_and_pack_in_glwe_ciphertext<
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let input_lwe_secret_key =
@@ -540,9 +537,8 @@ pub fn par_keyswitch_lwe_ciphertext_list_and_pack_in_glwe_ciphertext<
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the LweSecretKey
 /// let input_lwe_secret_key =
@@ -758,4 +754,54 @@ pub fn par_keyswitch_lwe_ciphertext_list_and_pack_in_glwe_ciphertext_with_thread
     output_glwe_ciphertext
         .as_mut()
         .copy_from_slice(result.as_ref());
+}
+
+// ============== Noise measurement trait implementations ============== //
+use crate::core_crypto::commons::noise_formulas::noise_simulation::traits::{
+    AllocateLwePackingKeyswitchResult, LwePackingKeyswitch,
+};
+use crate::core_crypto::entities::glwe_ciphertext::GlweCiphertextOwned;
+
+impl<Scalar: UnsignedInteger, KeyCont: Container<Element = Scalar>>
+    AllocateLwePackingKeyswitchResult for LwePackingKeyswitchKey<KeyCont>
+{
+    type Output = GlweCiphertextOwned<Scalar>;
+    type SideResources = ();
+
+    fn allocate_lwe_packing_keyswitch_result(
+        &self,
+        _side_resources: &mut Self::SideResources,
+    ) -> Self::Output {
+        Self::Output::new(
+            Scalar::ZERO,
+            self.output_glwe_size(),
+            self.output_polynomial_size(),
+            self.ciphertext_modulus(),
+        )
+    }
+}
+
+impl<
+        Scalar: UnsignedInteger,
+        InputCont: Container<Element = Scalar>,
+        OutputCont: ContainerMut<Element = Scalar>,
+        KeyCont: Container<Element = Scalar> + Sync,
+    > LwePackingKeyswitch<[&LweCiphertext<InputCont>], GlweCiphertext<OutputCont>>
+    for LwePackingKeyswitchKey<KeyCont>
+{
+    type SideResources = ();
+
+    fn keyswitch_lwes_and_pack_in_glwe(
+        &self,
+        input: &[&LweCiphertext<InputCont>],
+        output: &mut GlweCiphertext<OutputCont>,
+        _side_resources: &mut Self::SideResources,
+    ) {
+        let input = LweCiphertextList::new_from_lwe_ciphertext_iterator(
+            input.iter().map(|lwe| lwe.as_view()),
+        )
+        .unwrap();
+
+        par_keyswitch_lwe_ciphertext_list_and_pack_in_glwe_ciphertext(self, &input, output);
+    }
 }

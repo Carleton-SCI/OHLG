@@ -119,7 +119,7 @@ impl KreyviumStreamByte<FheUint8> {
         }
 
         // Key and iv are stored in reverse in their shift registers
-        let mut key = key_bytes.map(|b| b.map(|x| (x as u8).reverse_bits() as u64));
+        let mut key = key_bytes.map(|b| b.reverse_bits());
         let mut iv = iv_bytes.map(|x| FheUint8::encrypt_trivial(x.reverse_bits()));
         key.reverse();
         iv.reverse();
@@ -237,18 +237,12 @@ where
     /// Computes 64 turns of the stream, outputting the 64 bits (in 8 bytes) all at once in a
     /// Vec (first value is oldest, last is newest)
     pub fn next_64(&mut self) -> Vec<T> {
-        match &self.fhe_key {
-            Some(sk) => {
-                rayon::broadcast(|_| set_server_key(sk.clone()));
-            }
-            None => (),
+        if let Some(sk) = &self.fhe_key {
+            rayon::broadcast(|_| set_server_key(sk.clone()));
         }
         let values = self.get_64_output_and_values();
-        match &self.fhe_key {
-            Some(_) => {
-                rayon::broadcast(|_| unset_server_key());
-            }
-            None => (),
+        if self.fhe_key.is_some() {
+            rayon::broadcast(|_| unset_server_key());
         }
 
         let mut bytes = Vec::<T>::with_capacity(8);

@@ -1,37 +1,52 @@
 mod modulus_switch_compression;
 pub(crate) mod test_add;
+pub(crate) mod test_aes;
 pub(crate) mod test_bitwise_op;
+mod test_block_rotate;
+mod test_block_shift;
 pub(crate) mod test_cmux;
 pub(crate) mod test_comparison;
+mod test_count_zeros_ones;
 pub(crate) mod test_div_mod;
+pub(crate) mod test_ilog2;
+pub(crate) mod test_kv_store;
 pub(crate) mod test_mul;
 pub(crate) mod test_neg;
+pub(crate) mod test_oprf;
 pub(crate) mod test_rotate;
 pub(crate) mod test_scalar_add;
 pub(crate) mod test_scalar_bitwise_op;
 pub(crate) mod test_scalar_comparison;
 pub(crate) mod test_scalar_div_mod;
+mod test_scalar_dot_prod;
 pub(crate) mod test_scalar_mul;
 pub(crate) mod test_scalar_rotate;
 pub(crate) mod test_scalar_shift;
 pub(crate) mod test_scalar_sub;
 pub(crate) mod test_shift;
+pub(crate) mod test_slice;
 pub(crate) mod test_sub;
 pub(crate) mod test_sum;
 pub(crate) mod test_vector_comparisons;
 pub(crate) mod test_vector_find;
 
 use super::tests_cases_unsigned::*;
+use crate::core_crypto::commons::generators::DeterministicSeeder;
+use crate::core_crypto::prelude::UnsignedInteger;
 use crate::integer::keycache::KEY_CACHE;
-use crate::integer::tests::create_parametrized_test;
-use crate::integer::{BooleanBlock, IntegerKeyKind, RadixCiphertext, RadixClientKey, ServerKey};
+use crate::integer::server_key::radix_parallel::tests_long_run::OpSequenceFunctionExecutor;
+use crate::integer::tests::create_parameterized_test;
+use crate::integer::{IntegerKeyKind, RadixCiphertext, RadixClientKey, ServerKey};
 use crate::shortint::ciphertext::MaxDegree;
 #[cfg(tarpaulin)]
 use crate::shortint::parameters::coverage_parameters::*;
+use crate::shortint::parameters::test_params::*;
 use crate::shortint::parameters::*;
+use crate::CompressedServerKey;
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::sync::Arc;
+use tfhe_csprng::generators::DefaultRandomGenerator;
 
 #[cfg(not(tarpaulin))]
 pub(crate) const NB_CTXT: usize = 4;
@@ -43,7 +58,9 @@ pub(crate) const MAX_VEC_LEN: usize = 25;
 #[cfg(tarpaulin)]
 pub(crate) const MAX_VEC_LEN: usize = 5;
 
-pub(crate) const fn nb_unchecked_tests_for_params(params: PBSParameters) -> usize {
+pub(crate) const MAX_NB_CTXT: usize = 8;
+
+pub(crate) const fn nb_unchecked_tests_for_params(params: AtomicPatternParameters) -> usize {
     nb_tests_for_params(params)
 }
 
@@ -51,7 +68,7 @@ pub(crate) const fn nb_unchecked_tests_for_params(params: PBSParameters) -> usiz
 ///
 /// The bigger the number of bits bootstrapped by the input parameters, the smaller the
 /// number of iteration is
-pub(crate) const fn nb_tests_for_params(params: PBSParameters) -> usize {
+pub(crate) const fn nb_tests_for_params(params: AtomicPatternParameters) -> usize {
     let full_modulus = params.message_modulus().0 * params.carry_modulus().0;
 
     if cfg!(tarpaulin) {
@@ -75,7 +92,7 @@ pub(crate) const fn nb_tests_for_params(params: PBSParameters) -> usize {
 
 /// Smaller number of loop iteration within randomized test,
 /// meant for test where the function tested is more expensive
-pub(crate) const fn nb_tests_smaller_for_params(params: PBSParameters) -> usize {
+pub(crate) const fn nb_tests_smaller_for_params(params: AtomicPatternParameters) -> usize {
     let full_modulus = params.message_modulus().0 * params.carry_modulus().0;
 
     if cfg!(tarpaulin) {
@@ -118,6 +135,23 @@ pub(crate) fn rotate_left_helper(value: u64, n: u32, actual_bit_size: u32) -> u6
     (rotated & mask) | ((rotated & shifted_mask) >> actual_bit_size)
 }
 
+pub(crate) fn block_rotate_left_helper(
+    value: u64,
+    n: u32,
+    num_blocks: u32,
+    bits_per_block: u32,
+) -> u64 {
+    let mut max_num_bits_that_tell_shift = num_blocks.ilog2();
+    if !num_blocks.is_power_of_two() {
+        max_num_bits_that_tell_shift += 1;
+    }
+
+    let n = n % (1 << max_num_bits_that_tell_shift);
+    // blocks are stored in little endian so rotating them to the left
+    // means rotating bits to the right
+    rotate_right_helper(value, n * bits_per_block, num_blocks * bits_per_block)
+}
+
 /// helper function to do a rotate right when the type used to store
 /// the value is bigger than the actual intended bit size
 pub(crate) fn rotate_right_helper(value: u64, n: u32, actual_bit_size: u32) -> u64 {
@@ -144,16 +178,71 @@ pub(crate) fn rotate_right_helper(value: u64, n: u32, actual_bit_size: u32) -> u
     (rotated & mask) | ((rotated & shifted_mask) >> (u64::BITS - actual_bit_size))
 }
 
-pub(crate) fn overflowing_sub_under_modulus(lhs: u64, rhs: u64, modulus: u64) -> (u64, bool) {
-    assert!(
-        !(modulus.is_power_of_two() && (modulus - 1).overflowing_mul(2).1),
-        "If modulus is not a power of two, then  must not overflow u64"
-    );
+pub(crate) fn block_rotate_right_helper(
+    value: u64,
+    n: u32,
+    num_blocks: u32,
+    bits_per_block: u32,
+) -> u64 {
+    let mut max_num_bits_that_tell_shift = num_blocks.ilog2();
+    if !num_blocks.is_power_of_two() {
+        max_num_bits_that_tell_shift += 1;
+    }
+
+    let n = n % (1 << max_num_bits_that_tell_shift);
+    // blocks are stored in little endian, so rotating them to the right
+    // means rotating bits to the left
+    rotate_left_helper(value, n * bits_per_block, num_blocks * bits_per_block)
+}
+
+pub(crate) fn block_shift_right_helper(
+    value: u64,
+    n: u32,
+    num_blocks: u32,
+    bits_per_block: u32,
+) -> u64 {
+    let mut max_num_bits_that_tell_shift = num_blocks.ilog2();
+    if !num_blocks.is_power_of_two() {
+        max_num_bits_that_tell_shift += 1;
+    }
+
+    let n = n % (1 << max_num_bits_that_tell_shift);
+    // blocks are stored in little endian, so shifting them to the right
+    // means shifting bits to the left
+    value.checked_shl(n * bits_per_block).unwrap() % (1u64 << (bits_per_block * num_blocks))
+}
+
+pub(crate) fn block_shift_left_helper(
+    value: u64,
+    n: u32,
+    num_blocks: u32,
+    bits_per_block: u32,
+) -> u64 {
+    let mut max_num_bits_that_tell_shift = num_blocks.ilog2();
+    if !num_blocks.is_power_of_two() {
+        max_num_bits_that_tell_shift += 1;
+    }
+
+    let n = n % (1 << max_num_bits_that_tell_shift);
+    // blocks are stored in little endian, so shifting them to the left
+    // means shifting bits to the right
+    value.checked_shr(n * bits_per_block).unwrap()
+}
+
+pub(crate) fn overflowing_sub_under_modulus<T: UnsignedInteger>(
+    lhs: T,
+    rhs: T,
+    modulus: T,
+) -> (T, bool) {
     let (result, overflowed) = lhs.overflowing_sub(rhs);
     (result % modulus, overflowed)
 }
 
-pub(crate) fn overflowing_add_under_modulus(lhs: u64, rhs: u64, modulus: u64) -> (u64, bool) {
+pub(crate) fn overflowing_add_under_modulus<T: UnsignedInteger>(
+    lhs: T,
+    rhs: T,
+    modulus: T,
+) -> (T, bool) {
     let (result, overflowed) = lhs.overflowing_add(rhs);
     (result % modulus, overflowed || result >= modulus)
 }
@@ -177,9 +266,22 @@ pub(crate) fn overflowing_mul_under_modulus(a: u64, b: u64, modulus: u64) -> (u6
 }
 
 pub(crate) fn unsigned_modulus(block_modulus: MessageModulus, num_blocks: u32) -> u64 {
-    (block_modulus.0 as u64)
+    block_modulus
+        .0
         .checked_pow(num_blocks)
         .expect("Modulus exceed u64::MAX")
+}
+
+/// This is just a copy-paste as it creates less breakage than modify the u64 one to return
+/// an u128.
+///
+/// Also, it would mean users would do `unsigned_modulus(...) as u64` which when reading
+/// could create the suspicion of whether the as cast is value and try_into should be used,
+/// but then it becomes more verbose.
+pub(crate) fn unsigned_modulus_u128(block_modulus: MessageModulus, num_blocks: u32) -> u128 {
+    (block_modulus.0 as u128)
+        .checked_pow(num_blocks)
+        .expect("Modulus exceed u128::MAX")
 }
 
 /// Given a radix ciphertext, checks that all the block's decrypted message and carry
@@ -193,7 +295,7 @@ where
     for (i, block) in ct.blocks.iter().enumerate() {
         let block_value = cks.key.decrypt_message_and_carry(block);
         assert!(
-            block_value <= block.degree.get() as u64,
+            block_value <= block.degree.get(),
             "Block at index {i} has a value {block_value} that exceeds its degree ({:?})",
             block.degree
         );
@@ -224,7 +326,7 @@ fn panic_if_any_block_info_exceeds_max_degree_or_noise(
         first_block.degree
     );
     assert!(
-        max_noise_level.validate(first_block.noise_level).is_ok(),
+        max_noise_level.validate(first_block.noise_level()).is_ok(),
         "Block at index 0 has a noise level {:?} that exceeds max noise level ({max_noise_level:?})",
         first_block.degree
     );
@@ -236,7 +338,7 @@ fn panic_if_any_block_info_exceeds_max_degree_or_noise(
             block.degree
         );
         assert!(
-            max_noise_level.validate(block.noise_level).is_ok(),
+            max_noise_level.validate(block.noise_level()).is_ok(),
             "Block at index {i} has a noise level {:?} that exceeds max noise level ({max_noise_level:?})",
             block.degree
         );
@@ -254,26 +356,27 @@ where
 {
     let cks = cks.as_ref();
 
-    let max_degree_acceptable = cks.key.parameters.message_modulus().0 - 1;
+    let max_degree_acceptable = cks.key.parameters().message_modulus().0 - 1;
+    let num_blocks = ct.blocks.len();
 
     for (i, block) in ct.blocks.iter().enumerate() {
         assert_eq!(
-            block.noise_level,
+            block.noise_level(),
             NoiseLevel::NOMINAL,
-            "Block at index {i} has a non nominal noise level: {:?}",
-            block.noise_level
+            "Block at index {i} / {num_blocks} has a non nominal noise level: {:?}",
+            block.noise_level()
         );
 
         assert!(
             block.degree.get() <= max_degree_acceptable,
-            "Block at index {i} has a degree {:?} that exceeds the maximum ({}) for a clean block",
+            "Block at index {i} / {num_blocks} has a degree {:?} that exceeds the maximum ({}) for a clean block",
             block.degree,
             max_degree_acceptable
         );
 
         let block_value = cks.key.decrypt_message_and_carry(block);
         assert!(
-            block_value <= block.degree.get() as u64,
+            block_value <= block.degree.get(),
             "Block at index {i} has a value {block_value} that exceeds its degree ({:?})",
             block.degree
         );
@@ -289,17 +392,17 @@ where
 {
     let cks = cks.as_ref();
 
-    let max_degree_acceptable = cks.key.parameters.message_modulus().0 - 1;
+    let max_degree_acceptable = cks.key.parameters().message_modulus().0 - 1;
 
     for (i, block) in ct.blocks.iter().enumerate() {
         if block.is_trivial() {
             continue;
         }
         assert_eq!(
-            block.noise_level,
+            block.noise_level(),
             NoiseLevel::NOMINAL,
             "Block at index {i} has a non nominal noise level: {:?}",
-            block.noise_level
+            block.noise_level()
         );
 
         assert!(
@@ -311,7 +414,7 @@ where
 
         let block_value = cks.key.decrypt_message_and_carry(block);
         assert!(
-            block_value <= block.degree.get() as u64,
+            block_value <= block.degree.get(),
             "Block at index {i} has a value {block_value} that exceeds its degree ({:?})",
             block.degree
         );
@@ -362,9 +465,10 @@ impl ExpectedNoiseLevels {
             .enumerate()
         {
             assert_eq!(
-                block.noise_level, expected_noise,
+                block.noise_level(),
+                expected_noise,
                 "Block at index {i} has noise level {:?}, but {expected_noise:?} was expected",
-                block.noise_level
+                block.noise_level()
             );
         }
     }
@@ -405,100 +509,8 @@ impl ExpectedDegrees {
         }
     }
 }
-
-// left/right shifts
-create_parametrized_test!(
-    integer_unchecked_left_shift {
-        coverage => {
-            COVERAGE_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            COVERAGE_PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-        },
-        no_coverage => {
-            // This algorithm requires 3 bits
-            PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            PARAM_MESSAGE_3_CARRY_3_KS_PBS,
-            PARAM_MESSAGE_4_CARRY_4_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_3_KS_PBS,
-        }
-    }
-);
-create_parametrized_test!(
-    integer_unchecked_right_shift {
-        coverage => {
-            COVERAGE_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            COVERAGE_PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-        },
-        no_coverage => {
-            // This algorithm requires 3 bits
-            PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            PARAM_MESSAGE_3_CARRY_3_KS_PBS,
-            PARAM_MESSAGE_4_CARRY_4_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_3_KS_PBS,
-        }
-    }
-);
-// left/right rotations
-create_parametrized_test!(
-    integer_unchecked_rotate_left {
-        coverage => {
-            COVERAGE_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            COVERAGE_PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-        },
-        no_coverage => {
-            // This algorithm requires 3 bits
-            PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            PARAM_MESSAGE_3_CARRY_3_KS_PBS,
-            PARAM_MESSAGE_4_CARRY_4_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_3_KS_PBS,
-        }
-    }
-);
-create_parametrized_test!(
-    integer_unchecked_rotate_right {
-        coverage => {
-            COVERAGE_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            COVERAGE_PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-        },
-        no_coverage => {
-            // This algorithm requires 3 bits
-            PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            PARAM_MESSAGE_3_CARRY_3_KS_PBS,
-            PARAM_MESSAGE_4_CARRY_4_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_3_KS_PBS,
-        }
-    }
-);
-// left/right rotations
-create_parametrized_test!(integer_trim_radix_msb_blocks_handles_dirty_inputs);
-create_parametrized_test!(integer_default_trailing_zeros);
-create_parametrized_test!(integer_default_trailing_ones);
-create_parametrized_test!(integer_default_leading_zeros);
-create_parametrized_test!(integer_default_leading_ones);
-create_parametrized_test!(integer_default_ilog2);
-create_parametrized_test!(integer_default_checked_ilog2 {
-    // This uses comparisons, so require more than 1 bit
-    PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-    PARAM_MESSAGE_3_CARRY_3_KS_PBS,
-    PARAM_MESSAGE_4_CARRY_4_KS_PBS,
-    PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-    PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-    PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_2_KS_PBS,
-    PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_3_KS_PBS
-});
-
-create_parametrized_test!(
+create_parameterized_test!(integer_trim_radix_msb_blocks_handles_dirty_inputs);
+create_parameterized_test!(
     integer_full_propagate {
         coverage => {
             COVERAGE_PARAM_MESSAGE_2_CARRY_2_KS_PBS,
@@ -506,15 +518,16 @@ create_parametrized_test!(
             COVERAGE_PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
         },
         no_coverage => {
-            PARAM_MESSAGE_1_CARRY_1_KS_PBS,
-            PARAM_MESSAGE_2_CARRY_2_KS_PBS,
-            PARAM_MESSAGE_2_CARRY_3_KS_PBS,  // Test case where carry_modulus > message_modulus
-            PARAM_MESSAGE_3_CARRY_3_KS_PBS,
-            PARAM_MESSAGE_4_CARRY_4_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_2_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-            PARAM_MULTI_BIT_MESSAGE_3_CARRY_3_GROUP_3_KS_PBS,
+            TEST_PARAM_MESSAGE_1_CARRY_1_KS_PBS_GAUSSIAN_2M128,
+            PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128,
+            TEST_PARAM_MESSAGE_2_CARRY_3_KS_PBS_GAUSSIAN_2M128,  // Test case where carry_modulus > message_modulus
+            TEST_PARAM_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M128,
+            // 2M128 is too slow for 4_4, it is estimated to be 2x slower
+            TEST_PARAM_MESSAGE_4_CARRY_4_KS_PBS_GAUSSIAN_2M64,
+            TEST_PARAM_MULTI_BIT_GROUP_2_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64,
+            TEST_PARAM_MULTI_BIT_GROUP_2_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M64,
+            TEST_PARAM_MULTI_BIT_GROUP_3_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64,
+            TEST_PARAM_MULTI_BIT_GROUP_3_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M64,
         }
     }
 );
@@ -535,83 +548,33 @@ impl<F> CpuFunctionExecutor<F> {
     }
 }
 
-/// For unary function
+pub(crate) trait NotTuple {}
+
+impl<T> NotTuple for &crate::integer::ciphertext::BaseRadixCiphertext<T> {}
+
+impl<T> NotTuple for &crate::integer::ciphertext::BaseSignedRadixCiphertext<T> {}
+
+impl<T> NotTuple for &mut crate::integer::ciphertext::BaseRadixCiphertext<T> {}
+
+impl<T> NotTuple for &mut crate::integer::ciphertext::BaseSignedRadixCiphertext<T> {}
+
+impl<T> NotTuple for &Vec<T> {}
+
+impl NotTuple for &crate::integer::ciphertext::BooleanBlock {}
+
+/// For unary operations
 ///
-/// Note, we don't do
-/// impl<F, I, O> TestExecutor<I, O> for CpuTestExecutor<F>
-/// where F: Fn(&ServerKey, I) -> O {}
-/// As it would conflict with other impls.
-///
-/// impl<F, I1, O> TestExecutor<(I,), O> for CpuTestExecutor<F>
-/// would be possible tho.
-impl<'a, F> FunctionExecutor<&'a RadixCiphertext, (RadixCiphertext, BooleanBlock)>
-    for CpuFunctionExecutor<F>
+/// Note, we need to `NotTuple` constraint to avoid conflicts with binary or ternary operations
+impl<F, I1, O> FunctionExecutor<I1, O> for CpuFunctionExecutor<F>
 where
-    F: Fn(&ServerKey, &RadixCiphertext) -> (RadixCiphertext, BooleanBlock),
+    F: Fn(&ServerKey, I1) -> O,
+    I1: NotTuple,
 {
     fn setup(&mut self, _cks: &RadixClientKey, sks: Arc<ServerKey>) {
         self.sks = Some(sks);
     }
 
-    fn execute(&mut self, input: &'a RadixCiphertext) -> (RadixCiphertext, BooleanBlock) {
-        let sks = self.sks.as_ref().expect("setup was not properly called");
-        (self.func)(sks, input)
-    }
-}
-
-impl<'a, F> FunctionExecutor<&'a RadixCiphertext, RadixCiphertext> for CpuFunctionExecutor<F>
-where
-    F: Fn(&ServerKey, &RadixCiphertext) -> RadixCiphertext,
-{
-    fn setup(&mut self, _cks: &RadixClientKey, sks: Arc<ServerKey>) {
-        self.sks = Some(sks);
-    }
-
-    fn execute(&mut self, input: &'a RadixCiphertext) -> RadixCiphertext {
-        let sks = self.sks.as_ref().expect("setup was not properly called");
-        (self.func)(sks, input)
-    }
-}
-
-impl<'a, F> FunctionExecutor<&'a Vec<RadixCiphertext>, Option<RadixCiphertext>>
-    for CpuFunctionExecutor<F>
-where
-    F: Fn(&ServerKey, &Vec<RadixCiphertext>) -> Option<RadixCiphertext>,
-{
-    fn setup(&mut self, _cks: &RadixClientKey, sks: Arc<ServerKey>) {
-        self.sks = Some(sks);
-    }
-
-    fn execute(&mut self, input: &'a Vec<RadixCiphertext>) -> Option<RadixCiphertext> {
-        let sks = self.sks.as_ref().expect("setup was not properly called");
-        (self.func)(sks, input)
-    }
-}
-
-/// Unary assign fn
-impl<'a, F> FunctionExecutor<&'a mut RadixCiphertext, ()> for CpuFunctionExecutor<F>
-where
-    F: Fn(&ServerKey, &'a mut RadixCiphertext),
-{
-    fn setup(&mut self, _cks: &RadixClientKey, sks: Arc<ServerKey>) {
-        self.sks = Some(sks);
-    }
-
-    fn execute(&mut self, input: &'a mut RadixCiphertext) {
-        let sks = self.sks.as_ref().expect("setup was not properly called");
-        (self.func)(sks, input);
-    }
-}
-
-impl<'a, F> FunctionExecutor<&'a mut RadixCiphertext, RadixCiphertext> for CpuFunctionExecutor<F>
-where
-    F: Fn(&ServerKey, &mut RadixCiphertext) -> RadixCiphertext,
-{
-    fn setup(&mut self, _cks: &RadixClientKey, sks: Arc<ServerKey>) {
-        self.sks = Some(sks);
-    }
-
-    fn execute(&mut self, input: &'a mut RadixCiphertext) -> RadixCiphertext {
+    fn execute(&mut self, input: I1) -> O {
         let sks = self.sks.as_ref().expect("setup was not properly called");
         (self.func)(sks, input)
     }
@@ -647,105 +610,129 @@ where
     }
 }
 
+/// For 4-ary operations
+impl<F, I1, I2, I3, I4, O> FunctionExecutor<(I1, I2, I3, I4), O> for CpuFunctionExecutor<F>
+where
+    F: Fn(&ServerKey, I1, I2, I3, I4) -> O,
+{
+    fn setup(&mut self, _cks: &RadixClientKey, sks: Arc<ServerKey>) {
+        self.sks = Some(sks);
+    }
+
+    fn execute(&mut self, input: (I1, I2, I3, I4)) -> O {
+        let sks = self.sks.as_ref().expect("setup was not properly called");
+        (self.func)(sks, input.0, input.1, input.2, input.3)
+    }
+}
+
+/// The function executor for cpu server key
+///
+/// It will mainly simply forward call to a server key method
+pub(crate) struct OpSequenceCpuFunctionExecutor<F> {
+    /// The server key is set later, when the test cast calls setup
+    pub(crate) sks: Option<Arc<ServerKey>>,
+    /// The server key function which will be called
+    pub(crate) func: F,
+}
+
+impl<F> OpSequenceCpuFunctionExecutor<F> {
+    pub(crate) fn new(func: F) -> Self {
+        Self { sks: None, func }
+    }
+    pub(crate) fn setup_from_cpu_keys(&mut self, sks: &CompressedServerKey) {
+        let (isks, _, _, _, _, _, _, _) = sks.decompress().into_raw_parts();
+        self.sks = Some(Arc::new(isks));
+    }
+}
+
+/// For unary operations
+///
+/// Note, we need to `NotTuple` constraint to avoid conflicts with binary or ternary operations
+impl<F, I1, O> OpSequenceFunctionExecutor<I1, O> for OpSequenceCpuFunctionExecutor<F>
+where
+    F: Fn(&ServerKey, I1) -> O,
+    I1: NotTuple,
+{
+    fn setup(
+        &mut self,
+        _cks: &RadixClientKey,
+        sks: &CompressedServerKey,
+        _seeder: &mut DeterministicSeeder<DefaultRandomGenerator>,
+    ) {
+        let (isks, _, _, _, _, _, _, _) = sks.decompress().into_raw_parts();
+        self.sks = Some(Arc::new(isks));
+    }
+
+    fn execute(&mut self, input: I1) -> O {
+        let sks = self.sks.as_ref().expect("setup was not properly called");
+        (self.func)(sks, input)
+    }
+}
+
+/// For binary operations
+impl<F, I1, I2, O> OpSequenceFunctionExecutor<(I1, I2), O> for OpSequenceCpuFunctionExecutor<F>
+where
+    F: Fn(&ServerKey, I1, I2) -> O,
+{
+    fn setup(
+        &mut self,
+        _cks: &RadixClientKey,
+        sks: &CompressedServerKey,
+        _seeder: &mut DeterministicSeeder<DefaultRandomGenerator>,
+    ) {
+        self.setup_from_cpu_keys(sks);
+    }
+
+    fn execute(&mut self, input: (I1, I2)) -> O {
+        let sks = self.sks.as_ref().expect("setup was not properly called");
+        (self.func)(sks, input.0, input.1)
+    }
+}
+
+/// For ternary operations
+impl<F, I1, I2, I3, O> OpSequenceFunctionExecutor<(I1, I2, I3), O>
+    for OpSequenceCpuFunctionExecutor<F>
+where
+    F: Fn(&ServerKey, I1, I2, I3) -> O,
+{
+    fn setup(
+        &mut self,
+        _cks: &RadixClientKey,
+        sks: &CompressedServerKey,
+        _seeder: &mut DeterministicSeeder<DefaultRandomGenerator>,
+    ) {
+        self.setup_from_cpu_keys(sks);
+    }
+
+    fn execute(&mut self, input: (I1, I2, I3)) -> O {
+        let sks = self.sks.as_ref().expect("setup was not properly called");
+        (self.func)(sks, input.0, input.1, input.2)
+    }
+}
+
+/// For 4-ary operations
+impl<F, I1, I2, I3, I4, O> OpSequenceFunctionExecutor<(I1, I2, I3, I4), O>
+    for OpSequenceCpuFunctionExecutor<F>
+where
+    F: Fn(&ServerKey, I1, I2, I3, I4) -> O,
+{
+    fn setup(
+        &mut self,
+        _cks: &RadixClientKey,
+        sks: &CompressedServerKey,
+        _seeder: &mut DeterministicSeeder<DefaultRandomGenerator>,
+    ) {
+        self.setup_from_cpu_keys(sks);
+    }
+    fn execute(&mut self, input: (I1, I2, I3, I4)) -> O {
+        let sks = self.sks.as_ref().expect("setup was not properly called");
+        (self.func)(sks, input.0, input.1, input.2, input.3)
+    }
+}
+
 //=============================================================================
 // Unchecked Tests
 //=============================================================================
-
-fn integer_unchecked_left_shift<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_left_shift_parallelized);
-    unchecked_left_shift_test(param, executor);
-}
-
-fn integer_unchecked_right_shift<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_right_shift_parallelized);
-    unchecked_right_shift_test(param, executor);
-}
-
-fn integer_unchecked_rotate_left<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_rotate_left_parallelized);
-    unchecked_rotate_left_test(param, executor);
-}
-
-fn integer_unchecked_rotate_right<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::unchecked_rotate_right_parallelized);
-    unchecked_rotate_right_test(param, executor);
-}
-
-//=============================================================================
-// Unchecked Scalar Tests
-//=============================================================================
-
-//=============================================================================
-// Smart Tests
-//=============================================================================
-
-//=============================================================================
-// Smart Scalar Tests
-//=============================================================================
-
-//=============================================================================
-// Default Tests
-//=============================================================================
-
-fn integer_default_trailing_zeros<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::trailing_zeros_parallelized);
-    default_trailing_zeros_test(param, executor);
-}
-
-fn integer_default_trailing_ones<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::trailing_ones_parallelized);
-    default_trailing_ones_test(param, executor);
-}
-
-fn integer_default_leading_zeros<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::leading_zeros_parallelized);
-    default_leading_zeros_test(param, executor);
-}
-
-fn integer_default_leading_ones<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::leading_ones_parallelized);
-    default_leading_ones_test(param, executor);
-}
-
-fn integer_default_ilog2<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::ilog2_parallelized);
-    default_ilog2_test(param, executor);
-}
-
-fn integer_default_checked_ilog2<P>(param: P)
-where
-    P: Into<PBSParameters>,
-{
-    let executor = CpuFunctionExecutor::new(&ServerKey::checked_ilog2_parallelized);
-    default_checked_ilog2_test(param, executor);
-}
 
 #[test]
 #[cfg(not(tarpaulin))]
@@ -781,11 +768,13 @@ fn test_non_regression_clone_from() {
 
 fn integer_trim_radix_msb_blocks_handles_dirty_inputs<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let param = param.into();
     let (client_key, server_key) = crate::integer::gen_keys_radix(param, NB_CTXT);
-    let modulus = (param.message_modulus().0 as u64)
+    let modulus = param
+        .message_modulus()
+        .0
         .checked_pow(NB_CTXT as u32)
         .expect("modulus of ciphertext exceed u64::MAX");
     let num_bits = param.message_modulus().0.ilog2() * NB_CTXT as u32;
@@ -823,7 +812,7 @@ where
 
 fn integer_full_propagate<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let executor = CpuFunctionExecutor::new(&ServerKey::full_propagate_parallelized);
     full_propagate_test(param, executor);

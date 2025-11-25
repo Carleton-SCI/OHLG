@@ -25,12 +25,12 @@ impl Gaussian<f64> {
 
     pub fn from_dispersion_parameter(dispersion: impl DispersionParameter, mean: f64) -> Self {
         Self {
-            std: dispersion.get_standard_dev(),
+            std: dispersion.get_standard_dev().0,
             mean,
         }
     }
 
-    pub fn standard_dev(&self) -> StandardDev {
+    pub const fn standard_dev(&self) -> StandardDev {
         StandardDev(self.std)
     }
 }
@@ -47,12 +47,12 @@ macro_rules! implement_gaussian {
                 let mut uniform_rand_bytes_u = [0u8; std::mem::size_of::<$S>()];
                 let mut uniform_rand_bytes_v = [0u8; std::mem::size_of::<$S>()];
                 loop {
-                    uniform_rand_bytes_u
-                        .iter_mut()
-                        .for_each(|a| *a = generator.generate_next());
-                    uniform_rand_bytes_v
-                        .iter_mut()
-                        .for_each(|a| *a = generator.generate_next());
+                    for a in uniform_rand_bytes_u.iter_mut() {
+                        *a = generator.generate_next();
+                    }
+                    for a in uniform_rand_bytes_v.iter_mut() {
+                        *a = generator.generate_next();
+                    }
                     let size = <$T>::BITS as i32;
                     let mut u: $T = <$S>::from_le_bytes(uniform_rand_bytes_u).cast_into();
                     u *= <$T>::TWO.powi(-size + 1);
@@ -73,7 +73,7 @@ macro_rules! implement_gaussian {
                 _modulus: Option<Self::CustomModulus>,
             ) -> f64 {
                 // The modulus and parameters of the distribution do not impact generation success
-                // The sample is valid if it's in the circle of radius pi and
+                // The sample is valid if it's in the circle of radius 1 and
                 // Samples are drawn in a 2 by 2 square, use area(circle) / area(square) as
                 // probability
                 std::f64::consts::PI / 4.0
@@ -127,7 +127,7 @@ where
         distribution: Gaussian<f64>,
         _modulus: Option<Self::CustomModulus>,
     ) -> f64 {
-        // Here the CustomModulus is a Torus and not f64 and is therefore not comaptible, so
+        // Here the CustomModulus is a Torus and not f64 and is therefore not compatible, so
         // we cannot forward it, thankully the modulus does not impact gaussian generation success
         <(f64, f64) as RandomGenerable<Gaussian<f64>>>::single_sample_success_probability(
             distribution,
@@ -139,7 +139,7 @@ where
         distribution: Gaussian<f64>,
         _modulus: Option<Self::CustomModulus>,
     ) -> usize {
-        // Here the CustomModulus is a Torus and not f64 and is therefore not comaptible, so
+        // Here the CustomModulus is a Torus and not f64 and is therefore not compatible, so
         // we cannot forward it, thankully the modulus does not impact gaussian generation success
         <(f64, f64) as RandomGenerable<Gaussian<f64>>>::single_sample_required_random_byte_count(
             distribution,
@@ -175,7 +175,7 @@ where
         distribution: Gaussian<f64>,
         _modulus: Option<Self::CustomModulus>,
     ) -> f64 {
-        // Here the CustomModulus is a Torus and not f64 and is therefore not comaptible, so
+        // Here the CustomModulus is a Torus and not f64 and is therefore not compatible, so
         // we cannot forward it, thankully the modulus does not impact gaussian generation success
         <(f64, f64) as RandomGenerable<Gaussian<f64>>>::single_sample_success_probability(
             distribution,
@@ -187,7 +187,7 @@ where
         distribution: Gaussian<f64>,
         _modulus: Option<Self::CustomModulus>,
     ) -> usize {
-        // Here the CustomModulus is a Torus and not f64 and is therefore not comaptible, so
+        // Here the CustomModulus is a Torus and not f64 and is therefore not compatible, so
         // we cannot forward it, thankully the modulus does not impact gaussian generation success
         <(f64, f64) as RandomGenerable<Gaussian<f64>>>::single_sample_required_random_byte_count(
             distribution,

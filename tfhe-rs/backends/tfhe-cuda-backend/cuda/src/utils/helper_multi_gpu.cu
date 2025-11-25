@@ -1,12 +1,14 @@
 #include "device.h"
-#include "helper_multi_gpu.h"
+#include "helper_multi_gpu.cuh"
 #include <mutex>
 #include <omp.h>
 
 std::mutex m;
 bool p2p_enabled = false;
+const int THRESHOLD_MULTI_GPU = 12;
 
-int cuda_setup_multi_gpu() {
+// Enable bidirectional p2p access between all available GPUs and device_0_id
+int32_t cuda_setup_multi_gpu(int device_0_id) {
   int num_gpus = cuda_get_number_of_gpus();
   if (num_gpus == 0)
     PANIC("GPU error: the number of GPUs should be > 0.")
@@ -18,48 +20,30 @@ int cuda_setup_multi_gpu() {
       omp_set_nested(1);
       int has_peer_access_to_device_0;
       for (int i = 1; i < num_gpus; i++) {
-        check_cuda_error(
-            cudaDeviceCanAccessPeer(&has_peer_access_to_device_0, i, 0));
+        check_cuda_error(cudaDeviceCanAccessPeer(&has_peer_access_to_device_0,
+                                                 i, device_0_id));
         if (has_peer_access_to_device_0) {
-          cudaMemPool_t mempool;
-          cudaMemAccessDesc desc = {};
-          // Enable P2P Access and mempool access
-          check_cuda_error(cudaSetDevice(i));
-          check_cuda_error(cudaDeviceEnablePeerAccess(0, 0));
-
-          check_cuda_error(cudaDeviceGetDefaultMemPool(&mempool, 0));
-          desc.location.type = cudaMemLocationTypeDevice;
-          desc.location.id = i;
-          desc.flags = cudaMemAccessFlagsProtReadWrite;
-          check_cuda_error(
-              cudaMemPoolSetAccess(mempool, &desc, 1 /* numDescs */));
-          num_used_gpus += 1;
-        } else {
-          break;
+          cuda_set_device(i);
+          check_cuda_error(cudaDeviceEnablePeerAccess(device_0_id, 0));
+          cuda_set_device(device_0_id);
+          check_cuda_error(cudaDeviceEnablePeerAccess(i, 0));
         }
+        num_used_gpus += 1;
       }
     } else {
-      int has_peer_access_to_device_0;
-      for (int i = 1; i < num_gpus; i++) {
-        check_cuda_error(
-            cudaDeviceCanAccessPeer(&has_peer_access_to_device_0, i, 0));
-        if (has_peer_access_to_device_0) {
-          num_used_gpus += 1;
-        } else {
-          break;
-        }
-      }
+      for (int i = 1; i < num_gpus; i++)
+        num_used_gpus += 1;
     }
     m.unlock();
   }
-  return num_used_gpus;
+  return (int32_t)(num_used_gpus);
 }
 
-int get_active_gpu_count(int num_inputs, int gpu_count) {
-  int active_gpu_count = gpu_count;
-  if (gpu_count > num_inputs) {
-    active_gpu_count = num_inputs;
-  }
+uint32_t get_active_gpu_count(uint32_t num_inputs, uint32_t gpu_count) {
+  uint32_t ceil_div_inputs =
+      std::max((uint32_t)1,
+               (num_inputs + THRESHOLD_MULTI_GPU - 1) / THRESHOLD_MULTI_GPU);
+  uint32_t active_gpu_count = std::min(ceil_div_inputs, gpu_count);
   return active_gpu_count;
 }
 

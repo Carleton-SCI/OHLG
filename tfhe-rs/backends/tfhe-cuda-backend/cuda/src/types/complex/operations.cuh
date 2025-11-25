@@ -1,15 +1,9 @@
 #ifndef GPU_BOOTSTRAP_COMMON_CUH
 #define GPU_BOOTSTRAP_COMMON_CUH
 
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 
-#define SNT 1
-#define dPI 6.283185307179586231995926937088
-
-using sTorus = int32_t;
-// using Torus = uint32_t;
 using sTorus = int32_t;
 using u32 = uint32_t;
 using i32 = int32_t;
@@ -18,80 +12,73 @@ using i32 = int32_t;
 // Basic double2 operations
 
 __device__ inline double2 conjugate(const double2 num) {
-  double2 res;
-  res.x = num.x;
-  res.y = -num.y;
-  return res;
+  return {num.x, -num.y};
 }
 
 __device__ inline void operator+=(double2 &lh, const double2 rh) {
-  lh.x += rh.x;
-  lh.y += rh.y;
+  lh.x = __dadd_rn(lh.x, rh.x);
+  lh.y = __dadd_rn(lh.y, rh.y);
 }
 
 __device__ inline void operator-=(double2 &lh, const double2 rh) {
-  lh.x -= rh.x;
-  lh.y -= rh.y;
+  lh.x = __dsub_rn(lh.x, rh.x);
+  lh.y = __dsub_rn(lh.y, rh.y);
 }
 
 __device__ inline double2 operator+(const double2 a, const double2 b) {
-  double2 res;
-  res.x = a.x + b.x;
-  res.y = a.y + b.y;
-  return res;
+  return {__dadd_rn(a.x, b.x), __dadd_rn(a.y, b.y)};
 }
 
 __device__ inline double2 operator-(const double2 a, const double2 b) {
-  double2 res;
-  res.x = a.x - b.x;
-  res.y = a.y - b.y;
-  return res;
+  return {__dsub_rn(a.x, b.x), __dsub_rn(a.y, b.y)};
 }
 
+// Fused multiply-add/subtract for complex multiplication
 __device__ inline double2 operator*(const double2 a, const double2 b) {
-  double xx = a.x * b.x;
-  double xy = a.x * b.y;
-  double yx = a.y * b.x;
-  double yy = a.y * b.y;
+  return {
+      __fma_rn(a.x, b.x,
+               -__dmul_rn(a.y, b.y)), // Real part: a.x * b.x - a.y * b.y
+      __fma_rn(a.x, b.y,
+               __dmul_rn(a.y, b.x)) // Imaginary part: a.x * b.y + a.y * b.x
+  };
+}
 
-  double2 res;
-  // asm volatile("fma.rn.f64 %0, %1, %2, %3;": "=d"(res.x) : "d"(a.x),
-  // "d"(b.x), "d"(yy));
-  res.x = xx - yy;
-  res.y = xy + yx;
-  return res;
+// Fused complex multiplication assignment (avoiding temporary storage)
+__device__ inline void operator*=(double2 &a, const double2 b) {
+  double real = __fma_rn(a.x, b.x, -__dmul_rn(a.y, b.y));
+  a.y = __fma_rn(
+      a.x, b.y,
+      __dmul_rn(a.y,
+                b.x)); // Update imag first to prevent register reuse issues
+  a.x = real;
 }
 
 __device__ inline double2 operator*(const double2 a, double b) {
-  double2 res;
-  res.x = a.x * b;
-  res.y = a.y * b;
-  return res;
+  return {__dmul_rn(a.x, b), __dmul_rn(a.y, b)};
 }
 
-__device__ inline void operator*=(double2 &a, const double2 b) {
-  double tmp = a.x;
-  a.x *= b.x;
-  a.x -= a.y * b.y;
-  a.y *= b.x;
-  a.y += b.y * tmp;
-}
-
+// Direct multiplication with scalar
 __device__ inline void operator*=(double2 &a, const double b) {
-  a.x *= b;
-  a.y *= b;
+  a.x = __dmul_rn(a.x, b);
+  a.y = __dmul_rn(a.y, b);
 }
 
+// Fused division (could be improved with reciprocal if division is frequent)
 __device__ inline void operator/=(double2 &a, const double b) {
-  a.x /= b;
-  a.y /= b;
+  double inv_b = __drcp_rn(b); // Use reciprocal for faster division
+  a.x = __dmul_rn(a.x, inv_b);
+  a.y = __dmul_rn(a.y, inv_b);
 }
 
 __device__ inline double2 operator*(double a, double2 b) {
-  double2 res;
-  res.x = b.x * a;
-  res.y = b.y * a;
-  return res;
+  return {__dmul_rn(b.x, a), __dmul_rn(b.y, a)};
 }
 
+__device__ inline double2 shfl_xor_double2(double2 val, int laneMask,
+                                           unsigned mask = 0xFFFFFFFF) {
+  double re = __shfl_xor_sync(mask, val.x, laneMask);
+  double im = __shfl_xor_sync(mask, val.y, laneMask);
+
+  return make_double2(re, im);
+}
 #endif

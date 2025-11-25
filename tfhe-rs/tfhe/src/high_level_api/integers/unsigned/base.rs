@@ -4,21 +4,35 @@ use super::inner::RadixCiphertext;
 use crate::backward_compatibility::integers::FheUintVersions;
 use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::prelude::{CastFrom, UnsignedInteger, UnsignedNumeric};
-#[cfg(feature = "gpu")]
-use crate::high_level_api::global_state::with_thread_local_cuda_streams;
+use crate::high_level_api::details::MaybeCloned;
+use crate::high_level_api::errors::UninitializedReRandKey;
 use crate::high_level_api::integers::signed::{FheInt, FheIntId};
-use crate::high_level_api::integers::IntegerId;
-use crate::high_level_api::keys::InternalServerKey;
+use crate::high_level_api::integers::{FheIntegerType, IntegerId};
+use crate::high_level_api::keys::{CompactPublicKey, InternalServerKey};
+use crate::high_level_api::re_randomization::ReRandomizationMetadata;
+use crate::high_level_api::traits::{FheWait, ReRandomize, Tagged};
 use crate::high_level_api::{global_state, Device};
 use crate::integer::block_decomposition::{DecomposableInto, RecomposableFrom};
+use crate::integer::ciphertext::ReRandomizationSeed;
+#[cfg(feature = "gpu")]
+use crate::integer::gpu::ciphertext::CudaIntegerRadixCiphertext;
+#[cfg(feature = "hpu")]
+use crate::integer::hpu::ciphertext::HpuRadixCiphertext;
 use crate::integer::parameters::RadixCiphertextConformanceParams;
 use crate::integer::server_key::MatchValues;
 use crate::named::Named;
 use crate::prelude::CastInto;
 use crate::shortint::ciphertext::NotTrivialCiphertextError;
-use crate::shortint::PBSParameters;
-use crate::{FheBool, ServerKey};
+use crate::shortint::AtomicPatternParameters;
+#[cfg(feature = "gpu")]
+use crate::GpuIndex;
+use crate::{FheBool, ServerKey, Tag};
 use std::marker::PhantomData;
+
+#[cfg(feature = "hpu")]
+use crate::high_level_api::traits::{FheHpu, HpuHandle};
+#[cfg(feature = "hpu")]
+use tfhe_hpu_backend::prelude::*;
 
 #[derive(Debug)]
 pub enum GenericIntegerBlockError {
@@ -55,7 +69,14 @@ impl std::fmt::Display for GenericIntegerBlockError {
     }
 }
 
-pub trait FheUintId: IntegerId {}
+#[cfg(not(feature = "gpu"))]
+type ExpectedInnerGpu = ();
+#[cfg(feature = "gpu")]
+type ExpectedInnerGpu = crate::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext;
+pub trait FheUintId:
+    IntegerId<InnerCpu = crate::integer::RadixCiphertext, InnerGpu = ExpectedInnerGpu>
+{
+}
 
 /// A Generic FHE unsigned integer
 ///
@@ -72,20 +93,22 @@ pub trait FheUintId: IntegerId {}
 /// [FheUint8]: crate::high_level_api::FheUint8
 /// [FheUint12]: crate::high_level_api::FheUint12
 /// [FheUint16]: crate::high_level_api::FheUint16
-#[cfg_attr(all(doc, not(doctest)), doc(cfg(feature = "integer")))]
 #[derive(Clone, serde::Deserialize, serde::Serialize, Versionize)]
 #[versionize(FheUintVersions)]
 pub struct FheUint<Id: FheUintId> {
     pub(in crate::high_level_api) ciphertext: RadixCiphertext,
-    pub(in crate::high_level_api::integers) id: Id,
+    pub(in crate::high_level_api) id: Id,
+    pub(crate) tag: Tag,
+    pub(crate) re_randomization_metadata: ReRandomizationMetadata,
 }
 
+#[derive(Copy, Clone)]
 pub struct FheUintConformanceParams<Id: FheUintId> {
     pub(crate) params: RadixCiphertextConformanceParams,
     pub(crate) id: PhantomData<Id>,
 }
 
-impl<Id: FheUintId, P: Into<PBSParameters>> From<P> for FheUintConformanceParams<Id> {
+impl<Id: FheUintId, P: Into<AtomicPatternParameters>> From<P> for FheUintConformanceParams<Id> {
     fn from(params: P) -> Self {
         let params = params.into();
         Self {
@@ -114,7 +137,14 @@ impl<Id: FheUintId> ParameterSetConformant for FheUint<Id> {
     type ParameterSet = FheUintConformanceParams<Id>;
 
     fn is_conformant(&self, params: &FheUintConformanceParams<Id>) -> bool {
-        self.ciphertext.on_cpu().is_conformant(&params.params)
+        let Self {
+            ciphertext,
+            id: _,
+            tag: _,
+            re_randomization_metadata: _,
+        } = self;
+
+        ciphertext.on_cpu().is_conformant(&params.params)
     }
 }
 
@@ -122,33 +152,160 @@ impl<Id: FheUintId> Named for FheUint<Id> {
     const NAME: &'static str = "high_level_api::FheUint";
 }
 
+impl<Id> FheIntegerType for FheUint<Id>
+where
+    Id: FheUintId,
+{
+    type Id = Id;
+
+    fn on_cpu(&self) -> MaybeCloned<'_, <Self::Id as IntegerId>::InnerCpu> {
+        self.ciphertext.on_cpu()
+    }
+
+    fn into_cpu(self) -> <Self::Id as IntegerId>::InnerCpu {
+        self.ciphertext.into_cpu()
+    }
+
+    fn from_cpu(
+        inner: <Self::Id as IntegerId>::InnerCpu,
+        tag: Tag,
+        re_randomization_metadata: ReRandomizationMetadata,
+    ) -> Self {
+        Self::new(inner, tag, re_randomization_metadata)
+    }
+}
+
+impl<Id> Tagged for FheUint<Id>
+where
+    Id: FheUintId,
+{
+    fn tag(&self) -> &Tag {
+        &self.tag
+    }
+
+    fn tag_mut(&mut self) -> &mut Tag {
+        &mut self.tag
+    }
+}
+
+impl<Id> FheWait for FheUint<Id>
+where
+    Id: FheUintId,
+{
+    fn wait(&self) {
+        self.ciphertext.wait()
+    }
+}
+
+#[cfg(feature = "hpu")]
+impl<Id> FheHpu for FheUint<Id>
+where
+    Id: FheUintId,
+{
+    fn iop_exec(iop: &hpu_asm::AsmIOpcode, src: HpuHandle<&Self>) -> HpuHandle<Self> {
+        use crate::integer::hpu::ciphertext::HpuRadixCiphertext;
+        global_state::with_thread_local_hpu_device(|device| {
+            let mut srcs = Vec::new();
+            for n in src.native.iter() {
+                srcs.push(n.ciphertext.on_hpu(device).clone());
+            }
+            for b in src.boolean.iter() {
+                srcs.push(b.ciphertext.on_hpu(device).clone());
+            }
+
+            let (opcode, proto) = {
+                (
+                    iop.opcode(),
+                    &iop.format().expect("Unspecified IOP format").proto,
+                )
+            };
+            // These clones are cheap as they are just Arc
+            let hpu_res = HpuRadixCiphertext::exec(proto, opcode, &srcs, &src.imm);
+            HpuHandle {
+                native: hpu_res
+                    .iter()
+                    .filter(|x| !x.0.is_boolean())
+                    .map(|x| {
+                        Self::new(
+                            x.clone(),
+                            device.tag.clone(),
+                            ReRandomizationMetadata::default(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                boolean: hpu_res
+                    .iter()
+                    .filter(|x| x.0.is_boolean())
+                    .map(|x| {
+                        FheBool::new(
+                            x.clone(),
+                            device.tag.clone(),
+                            ReRandomizationMetadata::default(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                imm: Vec::new(),
+            }
+        })
+    }
+}
+
 impl<Id> FheUint<Id>
 where
     Id: FheUintId,
 {
-    pub(in crate::high_level_api) fn new<T>(ciphertext: T) -> Self
+    pub(in crate::high_level_api) fn new<T>(
+        ciphertext: T,
+        tag: Tag,
+        re_randomization_metadata: ReRandomizationMetadata,
+    ) -> Self
     where
         T: Into<RadixCiphertext>,
     {
         Self {
             ciphertext: ciphertext.into(),
             id: Id::default(),
+            tag,
+            re_randomization_metadata,
         }
     }
 
-    pub fn into_raw_parts(self) -> (crate::integer::RadixCiphertext, Id) {
-        let Self { ciphertext, id } = self;
+    pub fn into_raw_parts(
+        self,
+    ) -> (
+        crate::integer::RadixCiphertext,
+        Id,
+        Tag,
+        ReRandomizationMetadata,
+    ) {
+        let Self {
+            ciphertext,
+            id,
+            tag,
+            re_randomization_metadata,
+        } = self;
 
         let ciphertext = ciphertext.into_cpu();
 
-        (ciphertext, id)
+        (ciphertext, id, tag, re_randomization_metadata)
     }
 
-    pub fn from_raw_parts(ciphertext: crate::integer::RadixCiphertext, id: Id) -> Self {
+    pub fn from_raw_parts(
+        ciphertext: crate::integer::RadixCiphertext,
+        id: Id,
+        tag: Tag,
+        re_randomization_metadata: ReRandomizationMetadata,
+    ) -> Self {
         Self {
             ciphertext: RadixCiphertext::Cpu(ciphertext),
             id,
+            tag,
+            re_randomization_metadata,
         }
+    }
+
+    pub fn num_bits() -> usize {
+        Id::num_bits()
     }
 
     pub(in crate::high_level_api) fn move_to_device_of_server_key_if_set(&mut self) {
@@ -165,6 +322,125 @@ where
     /// Does nothing if the ciphertext is already in the desired device
     pub fn move_to_device(&mut self, device: Device) {
         self.ciphertext.move_to_device(device)
+    }
+
+    /// Moves (in-place) the ciphertext to the device of the current
+    /// thread-local server key
+    ///
+    /// Does nothing if the ciphertext is already in the desired device
+    /// or if no server key is set
+    pub fn move_to_current_device(&mut self) {
+        self.ciphertext.move_to_device_of_server_key_if_set();
+    }
+
+    /// Returns the indexes of the GPUs where the ciphertext lives
+    ///
+    /// If the ciphertext is on another deive (e.g CPU) then the returned
+    /// slice is empty
+    #[cfg(feature = "gpu")]
+    pub fn gpu_indexes(&self) -> &[GpuIndex] {
+        if let RadixCiphertext::Cuda(cuda_ct) = &self.ciphertext {
+            cuda_ct.gpu_indexes()
+        } else {
+            &[]
+        }
+    }
+    /// Returns a FheBool that encrypts `true` if the value is even
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tfhe::prelude::*;
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
+    ///
+    /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
+    /// set_server_key(server_key);
+    ///
+    /// let a = FheUint16::encrypt(32u16, &client_key);
+    ///
+    /// let result = a.is_even();
+    /// let decrypted = result.decrypt(&client_key);
+    /// assert!(decrypted);
+    /// ```
+    pub fn is_even(&self) -> FheBool {
+        global_state::with_internal_keys(|key| match key {
+            InternalServerKey::Cpu(cpu_key) => {
+                let result = cpu_key
+                    .pbs_key()
+                    .is_even_parallelized(&*self.ciphertext.on_cpu());
+                FheBool::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "gpu")]
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let result = cuda_key
+                    .key
+                    .key
+                    .is_even(&*self.ciphertext.on_gpu(streams), streams);
+                FheBool::new(
+                    result,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
+            }
+        })
+    }
+
+    /// Returns a FheBool that encrypts `true` if the value is odd
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tfhe::prelude::*;
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
+    ///
+    /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
+    /// set_server_key(server_key);
+    ///
+    /// let a = FheUint16::encrypt(4393u16, &client_key);
+    ///
+    /// let result = a.is_odd();
+    /// let decrypted = result.decrypt(&client_key);
+    /// assert!(decrypted);
+    /// ```
+    pub fn is_odd(&self) -> FheBool {
+        global_state::with_internal_keys(|key| match key {
+            InternalServerKey::Cpu(cpu_key) => {
+                let result = cpu_key
+                    .pbs_key()
+                    .is_odd_parallelized(&*self.ciphertext.on_cpu());
+                FheBool::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "gpu")]
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let result = cuda_key
+                    .key
+                    .key
+                    .is_odd(&*self.ciphertext.on_gpu(streams), streams);
+                FheBool::new(
+                    result,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
+            }
+        })
     }
 
     /// Tries to decrypt a trivial ciphertext
@@ -235,7 +511,7 @@ where
     ///
     /// ```rust
     /// use tfhe::prelude::*;
-    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16};
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
     /// set_server_key(server_key);
@@ -266,7 +542,7 @@ where
     ///
     /// ```rust
     /// use tfhe::prelude::*;
-    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16};
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
     /// set_server_key(server_key);
@@ -287,11 +563,50 @@ where
                     result,
                     super::FheUint32Id::num_blocks(cpu_key.pbs_key().message_modulus()),
                 );
-                super::FheUint32::new(result)
+                super::FheUint32::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(_) => {
-                panic!("Cuda devices do not support leading_zeros yet");
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let result = cuda_key
+                    .key
+                    .key
+                    .leading_zeros(&*self.ciphertext.on_gpu(streams), streams);
+                let result = cuda_key.key.key.cast_to_unsigned(
+                    result,
+                    super::FheUint32Id::num_blocks(cuda_key.key.key.message_modulus),
+                    streams,
+                );
+                super::FheUint32::new(
+                    result,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(device) => {
+                let hpu_self = self.ciphertext.on_hpu(device);
+
+                let (opcode, proto) = {
+                    let asm_iop = &hpu_asm::iop::IOP_LEAD0;
+                    (
+                        asm_iop.opcode(),
+                        &asm_iop.format().expect("Unspecified IOP format").proto,
+                    )
+                };
+                let hpu_result =
+                    HpuRadixCiphertext::exec(proto, opcode, std::slice::from_ref(&hpu_self), &[])
+                        .pop()
+                        .expect("IOP_LEAD0 must return 1 value");
+                super::FheUint32::new(
+                    hpu_result,
+                    device.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
         })
     }
@@ -302,7 +617,7 @@ where
     ///
     /// ```rust
     /// use tfhe::prelude::*;
-    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16};
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
     /// set_server_key(server_key);
@@ -323,11 +638,50 @@ where
                     result,
                     super::FheUint32Id::num_blocks(cpu_key.pbs_key().message_modulus()),
                 );
-                super::FheUint32::new(result)
+                super::FheUint32::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(_) => {
-                panic!("Cuda devices do not support leading_ones yet");
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let result = cuda_key
+                    .key
+                    .key
+                    .leading_ones(&*self.ciphertext.on_gpu(streams), streams);
+                let result = cuda_key.key.key.cast_to_unsigned(
+                    result,
+                    super::FheUint32Id::num_blocks(cuda_key.key.key.message_modulus),
+                    streams,
+                );
+                super::FheUint32::new(
+                    result,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(device) => {
+                let hpu_self = self.ciphertext.on_hpu(device);
+
+                let (opcode, proto) = {
+                    let asm_iop = &hpu_asm::iop::IOP_LEAD1;
+                    (
+                        asm_iop.opcode(),
+                        &asm_iop.format().expect("Unspecified IOP format").proto,
+                    )
+                };
+                let hpu_result =
+                    HpuRadixCiphertext::exec(proto, opcode, std::slice::from_ref(&hpu_self), &[])
+                        .pop()
+                        .expect("IOP_LEAD1 must return 1 value");
+                super::FheUint32::new(
+                    hpu_result,
+                    device.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
         })
     }
@@ -338,7 +692,7 @@ where
     ///
     /// ```rust
     /// use tfhe::prelude::*;
-    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16};
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
     /// set_server_key(server_key);
@@ -359,11 +713,50 @@ where
                     result,
                     super::FheUint32Id::num_blocks(cpu_key.pbs_key().message_modulus()),
                 );
-                super::FheUint32::new(result)
+                super::FheUint32::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(_) => {
-                panic!("Cuda devices do not support trailing_zeros yet");
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let result = cuda_key
+                    .key
+                    .key
+                    .trailing_zeros(&*self.ciphertext.on_gpu(streams), streams);
+                let result = cuda_key.key.key.cast_to_unsigned(
+                    result,
+                    super::FheUint32Id::num_blocks(cuda_key.key.key.message_modulus),
+                    streams,
+                );
+                super::FheUint32::new(
+                    result,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(device) => {
+                let hpu_self = self.ciphertext.on_hpu(device);
+
+                let (opcode, proto) = {
+                    let asm_iop = &hpu_asm::iop::IOP_TRAIL0;
+                    (
+                        asm_iop.opcode(),
+                        &asm_iop.format().expect("Unspecified IOP format").proto,
+                    )
+                };
+                let hpu_result =
+                    HpuRadixCiphertext::exec(proto, opcode, std::slice::from_ref(&hpu_self), &[])
+                        .pop()
+                        .expect("IOP_TRAIL0 must return 1 value");
+                super::FheUint32::new(
+                    hpu_result,
+                    device.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
         })
     }
@@ -374,7 +767,7 @@ where
     ///
     /// ```rust
     /// use tfhe::prelude::*;
-    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16};
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
     /// set_server_key(server_key);
@@ -395,11 +788,174 @@ where
                     result,
                     super::FheUint32Id::num_blocks(cpu_key.pbs_key().message_modulus()),
                 );
-                super::FheUint32::new(result)
+                super::FheUint32::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "gpu")]
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let result = cuda_key
+                    .key
+                    .key
+                    .trailing_ones(&*self.ciphertext.on_gpu(streams), streams);
+                let result = cuda_key.key.key.cast_to_unsigned(
+                    result,
+                    super::FheUint32Id::num_blocks(cuda_key.key.key.message_modulus),
+                    streams,
+                );
+                super::FheUint32::new(
+                    result,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(device) => {
+                let hpu_self = self.ciphertext.on_hpu(device);
+
+                let (opcode, proto) = {
+                    let asm_iop = &hpu_asm::iop::IOP_TRAIL1;
+                    (
+                        asm_iop.opcode(),
+                        &asm_iop.format().expect("Unspecified IOP format").proto,
+                    )
+                };
+                let hpu_result =
+                    HpuRadixCiphertext::exec(proto, opcode, std::slice::from_ref(&hpu_self), &[])
+                        .pop()
+                        .expect("IOP_TRAIL1 must return 1 value");
+                super::FheUint32::new(
+                    hpu_result,
+                    device.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+        })
+    }
+
+    /// Returns the number of ones in the binary representation of self.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tfhe::prelude::*;
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
+    ///
+    /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
+    /// set_server_key(server_key);
+    ///
+    /// let clear_a = 0b0000000_0110111u16;
+    /// let a = FheUint16::encrypt(clear_a, &client_key);
+    ///
+    /// let result = a.count_ones();
+    /// let decrypted: u32 = result.decrypt(&client_key);
+    /// assert_eq!(decrypted, clear_a.count_ones());
+    /// ```
+    pub fn count_ones(&self) -> super::FheUint32 {
+        global_state::with_internal_keys(|key| match key {
+            InternalServerKey::Cpu(cpu_key) => {
+                let result = cpu_key
+                    .pbs_key()
+                    .count_ones_parallelized(&*self.ciphertext.on_cpu());
+                let result = cpu_key.pbs_key().cast_to_unsigned(
+                    result,
+                    super::FheUint32Id::num_blocks(cpu_key.pbs_key().message_modulus()),
+                );
+                super::FheUint32::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
             #[cfg(feature = "gpu")]
             InternalServerKey::Cuda(_) => {
-                panic!("Cuda devices do not support trailing_ones yet");
+                panic!("Cuda devices do not support count_ones yet");
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(device) => {
+                let hpu_self = self.ciphertext.on_hpu(device);
+
+                let (opcode, proto) = {
+                    let asm_iop = &hpu_asm::iop::IOP_COUNT0;
+                    (
+                        asm_iop.opcode(),
+                        &asm_iop.format().expect("Unspecified IOP format").proto,
+                    )
+                };
+                let hpu_result =
+                    HpuRadixCiphertext::exec(proto, opcode, std::slice::from_ref(&hpu_self), &[])
+                        .pop()
+                        .expect("IOP_COUNT0 must return 1 value");
+                super::FheUint32::new(
+                    hpu_result,
+                    device.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+        })
+    }
+
+    /// Returns the number of zeros in the binary representation of self.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tfhe::prelude::*;
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
+    ///
+    /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
+    /// set_server_key(server_key);
+    ///
+    /// let clear_a = 0b0000000_0110111u16;
+    /// let a = FheUint16::encrypt(clear_a, &client_key);
+    ///
+    /// let result = a.count_zeros();
+    /// let decrypted: u32 = result.decrypt(&client_key);
+    /// assert_eq!(decrypted, clear_a.count_zeros());
+    /// ```
+    pub fn count_zeros(&self) -> super::FheUint32 {
+        global_state::with_internal_keys(|key| match key {
+            InternalServerKey::Cpu(cpu_key) => {
+                let result = cpu_key
+                    .pbs_key()
+                    .count_zeros_parallelized(&*self.ciphertext.on_cpu());
+                let result = cpu_key.pbs_key().cast_to_unsigned(
+                    result,
+                    super::FheUint32Id::num_blocks(cpu_key.pbs_key().message_modulus()),
+                );
+                super::FheUint32::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "gpu")]
+            InternalServerKey::Cuda(_) => {
+                panic!("Cuda devices do not support count_zeros yet");
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(device) => {
+                let hpu_self = self.ciphertext.on_hpu(device);
+
+                let (opcode, proto) = {
+                    let asm_iop = &hpu_asm::iop::IOP_COUNT1;
+                    (
+                        asm_iop.opcode(),
+                        &asm_iop.format().expect("Unspecified IOP format").proto,
+                    )
+                };
+                let hpu_result =
+                    HpuRadixCiphertext::exec(proto, opcode, std::slice::from_ref(&hpu_self), &[])
+                        .pop()
+                        .expect("IOP_COUNT1 must return 1 value");
+                super::FheUint32::new(
+                    hpu_result,
+                    device.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
         })
     }
@@ -412,7 +968,7 @@ where
     ///
     /// ```rust
     /// use tfhe::prelude::*;
-    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16};
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
     /// set_server_key(server_key);
@@ -433,11 +989,50 @@ where
                     result,
                     super::FheUint32Id::num_blocks(cpu_key.pbs_key().message_modulus()),
                 );
-                super::FheUint32::new(result)
+                super::FheUint32::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(_) => {
-                panic!("Cuda devices do not support ilog2 yet");
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let result = cuda_key
+                    .key
+                    .key
+                    .ilog2(&*self.ciphertext.on_gpu(streams), streams);
+                let result = cuda_key.key.key.cast_to_unsigned(
+                    result,
+                    super::FheUint32Id::num_blocks(cuda_key.key.key.message_modulus),
+                    streams,
+                );
+                super::FheUint32::new(
+                    result,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(device) => {
+                let hpu_self = self.ciphertext.on_hpu(device);
+
+                let (opcode, proto) = {
+                    let asm_iop = &hpu_asm::iop::IOP_ILOG2;
+                    (
+                        asm_iop.opcode(),
+                        &asm_iop.format().expect("Unspecified IOP format").proto,
+                    )
+                };
+                let hpu_result =
+                    HpuRadixCiphertext::exec(proto, opcode, std::slice::from_ref(&hpu_self), &[])
+                        .pop()
+                        .expect("IOP_ILOG2 must return 1 value");
+                super::FheUint32::new(
+                    hpu_result,
+                    device.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
         })
     }
@@ -450,7 +1045,7 @@ where
     ///
     /// ```rust
     /// use tfhe::prelude::*;
-    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16};
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint16};
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
     /// set_server_key(server_key);
@@ -475,11 +1070,47 @@ where
                     result,
                     super::FheUint32Id::num_blocks(cpu_key.pbs_key().message_modulus()),
                 );
-                (super::FheUint32::new(result), FheBool::new(is_ok))
+                (
+                    super::FheUint32::new(
+                        result,
+                        cpu_key.tag.clone(),
+                        ReRandomizationMetadata::default(),
+                    ),
+                    FheBool::new(
+                        is_ok,
+                        cpu_key.tag.clone(),
+                        ReRandomizationMetadata::default(),
+                    ),
+                )
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(_) => {
-                panic!("Cuda devices do not support checked_ilog2 yet");
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let (result, is_ok) = cuda_key
+                    .key
+                    .key
+                    .checked_ilog2(&*self.ciphertext.on_gpu(streams), streams);
+                let result = cuda_key.key.key.cast_to_unsigned(
+                    result,
+                    super::FheUint32Id::num_blocks(cuda_key.key.key.message_modulus),
+                    streams,
+                );
+                (
+                    super::FheUint32::new(
+                        result,
+                        cuda_key.tag.clone(),
+                        ReRandomizationMetadata::default(),
+                    ),
+                    FheBool::new(
+                        is_ok,
+                        cuda_key.tag.clone(),
+                        ReRandomizationMetadata::default(),
+                    ),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
             }
         })
     }
@@ -497,7 +1128,7 @@ where
     /// ```rust
     /// use tfhe::prelude::*;
     /// use tfhe::{
-    ///     generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16, FheUint8, MatchValues,
+    ///     generate_keys, set_server_key, ConfigBuilder, FheUint16, FheUint8, MatchValues,
     /// };
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
@@ -539,14 +1170,51 @@ where
                     let result = cpu_key
                         .pbs_key()
                         .cast_to_unsigned(result, target_num_blocks);
-                    Ok((FheUint::new(result), FheBool::new(matched)))
+                    Ok((
+                        FheUint::new(
+                            result,
+                            cpu_key.tag.clone(),
+                            ReRandomizationMetadata::default(),
+                        ),
+                        FheBool::new(
+                            matched,
+                            cpu_key.tag.clone(),
+                            ReRandomizationMetadata::default(),
+                        ),
+                    ))
                 } else {
                     Err(crate::Error::new("Output type does not have enough bits to represent all possible output values".to_string()))
                 }
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(_) => {
-                panic!("Cuda devices do not support match_value yet");
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let (result, matched) = cuda_key.key.key.match_value(
+                    &self.ciphertext.on_gpu(streams),
+                    matches,
+                    streams,
+                );
+                let target_num_blocks = OutId::num_blocks(cuda_key.key.key.message_modulus);
+                if target_num_blocks >= result.ciphertext.d_blocks.lwe_ciphertext_count().0 {
+                    Ok((
+                        FheUint::new(
+                            result,
+                            cuda_key.tag.clone(),
+                            ReRandomizationMetadata::default(),
+                        ),
+                        FheBool::new(
+                            matched,
+                            cuda_key.tag.clone(),
+                            ReRandomizationMetadata::default(),
+                        ),
+                    ))
+                } else {
+                    Err(crate::Error::new("Output type does not have enough bits to represent all possible output values".to_string()))
+                }
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
             }
         })
     }
@@ -563,7 +1231,7 @@ where
     /// ```rust
     /// use tfhe::prelude::*;
     /// use tfhe::{
-    ///     generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint16, FheUint8, MatchValues,
+    ///     generate_keys, set_server_key, ConfigBuilder, FheUint16, FheUint8, MatchValues,
     /// };
     ///
     /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
@@ -604,16 +1272,162 @@ where
                     let result = cpu_key
                         .pbs_key()
                         .cast_to_unsigned(result, target_num_blocks);
-                    Ok(FheUint::new(result))
+                    Ok(FheUint::new(
+                        result,
+                        cpu_key.tag.clone(),
+                        ReRandomizationMetadata::default(),
+                    ))
                 } else {
                     Err(crate::Error::new("Output type does not have enough bits to represent all possible output values".to_string()))
                 }
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(_) => {
-                panic!("Cuda devices do not support match_value_or yet");
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let result = cuda_key.key.key.match_value_or(
+                    &self.ciphertext.on_gpu(streams),
+                    matches,
+                    or_value,
+                    streams,
+                );
+                let target_num_blocks = OutId::num_blocks(cuda_key.key.key.message_modulus);
+                if target_num_blocks >= result.ciphertext.d_blocks.lwe_ciphertext_count().0 {
+                    Ok(FheUint::new(
+                        result,
+                        cuda_key.tag.clone(),
+                        ReRandomizationMetadata::default(),
+                    ))
+                } else {
+                    Err(crate::Error::new("Output type does not have enough bits to represent all possible output values".to_string()))
+                }
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
             }
         })
+    }
+
+    /// Reverse the bit of the unsigned integer
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tfhe::prelude::*;
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheUint8};
+    ///
+    /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
+    /// set_server_key(server_key);
+    ///
+    /// let msg = 0b10110100_u8;
+    ///
+    /// let a = FheUint8::encrypt(msg, &client_key);
+    ///
+    /// let result: FheUint8 = a.reverse_bits();
+    ///
+    /// let decrypted: u8 = result.decrypt(&client_key);
+    /// assert_eq!(decrypted, msg.reverse_bits());
+    /// ```
+    pub fn reverse_bits(&self) -> Self {
+        global_state::with_internal_keys(|key| match key {
+            InternalServerKey::Cpu(cpu_key) => {
+                let sk = &cpu_key.pbs_key();
+
+                let ct = self.ciphertext.on_cpu();
+
+                Self::new(
+                    sk.reverse_bits_parallelized(&*ct),
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "gpu")]
+            InternalServerKey::Cuda(_) => {
+                panic!("Cuda devices do not support reverse yet");
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
+            }
+        })
+    }
+
+    /// Creates a FheUint that encrypts either of two values depending
+    /// on an encrypted condition
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tfhe::prelude::*;
+    /// use tfhe::{generate_keys, set_server_key, ConfigBuilder, FheBool, FheUint32};
+    ///
+    /// let (client_key, server_key) = generate_keys(ConfigBuilder::default());
+    /// set_server_key(server_key);
+    ///
+    /// let cond = FheBool::encrypt(true, &client_key);
+    ///
+    /// let result = FheUint32::if_then_else(&cond, u32::MAX, u32::MIN);
+    /// let decrypted: u32 = result.decrypt(&client_key);
+    /// assert_eq!(decrypted, u32::MAX);
+    ///
+    /// let result = FheUint32::if_then_else(&!cond, u32::MAX, u32::MIN);
+    /// let decrypted: u32 = result.decrypt(&client_key);
+    /// assert_eq!(decrypted, u32::MIN);
+    /// ```
+    pub fn if_then_else<Clear>(condition: &FheBool, true_value: Clear, false_value: Clear) -> Self
+    where
+        Clear: UnsignedNumeric + DecomposableInto<u64>,
+    {
+        global_state::with_internal_keys(|key| match key {
+            InternalServerKey::Cpu(cpu_key) => {
+                let sk = cpu_key.pbs_key();
+
+                let result: crate::integer::RadixCiphertext = sk.scalar_if_then_else_parallelized(
+                    &condition.ciphertext.on_cpu(),
+                    true_value,
+                    false_value,
+                    Id::num_blocks(sk.message_modulus()),
+                );
+
+                Self::new(
+                    result,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "gpu")]
+            InternalServerKey::Cuda(_) => {
+                panic!("Cuda devices do not support if_then_else yet");
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_) => {
+                panic!("Hpu does not support this operation yet.");
+            }
+        })
+    }
+
+    /// Same as [Self::if_then_else] but with a different name
+    pub fn select<Clear>(condition: &FheBool, true_value: Clear, false_value: Clear) -> Self
+    where
+        Clear: UnsignedNumeric + DecomposableInto<u64>,
+    {
+        Self::if_then_else(condition, true_value, false_value)
+    }
+
+    /// Same as [Self::if_then_else] but with a different name
+    pub fn cmux<Clear>(condition: &FheBool, true_value: Clear, false_value: Clear) -> Self
+    where
+        Clear: UnsignedNumeric + DecomposableInto<u64>,
+    {
+        Self::if_then_else(condition, true_value, false_value)
+    }
+
+    pub fn re_randomization_metadata(&self) -> &ReRandomizationMetadata {
+        &self.re_randomization_metadata
+    }
+
+    pub fn re_randomization_metadata_mut(&mut self) -> &mut ReRandomizationMetadata {
+        &mut self.re_randomization_metadata
     }
 }
 
@@ -632,8 +1446,13 @@ where
                     sks.pbs_key().key.message_modulus,
                 ),
                 #[cfg(feature = "gpu")]
-                InternalServerKey::Cuda(cuda_key) => {
-                    (cuda_key.key.carry_modulus, cuda_key.key.message_modulus)
+                InternalServerKey::Cuda(cuda_key) => (
+                    cuda_key.key.key.carry_modulus,
+                    cuda_key.key.key.message_modulus,
+                ),
+                #[cfg(feature = "hpu")]
+                InternalServerKey::Hpu(_device) => {
+                    panic!("Hpu does not support this operation yet.")
                 }
             });
 
@@ -663,7 +1482,7 @@ where
             }
         }
 
-        let mut ciphertext = Self::new(other);
+        let mut ciphertext = Self::new(other, Tag::default(), ReRandomizationMetadata::default());
         ciphertext.move_to_device_of_server_key_if_set();
         Ok(ciphertext)
     }
@@ -710,17 +1529,30 @@ where
                     input.ciphertext.into_cpu(),
                     IntoId::num_blocks(cpu_key.message_modulus()),
                 );
-                Self::new(casted)
+                Self::new(
+                    casted,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(cuda_key) => with_thread_local_cuda_streams(|streams| {
-                let casted = cuda_key.key.cast_to_unsigned(
-                    input.ciphertext.into_gpu(),
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let casted = cuda_key.key.key.cast_to_unsigned(
+                    input.ciphertext.into_gpu(streams),
                     IntoId::num_blocks(cuda_key.message_modulus()),
                     streams,
                 );
-                Self::new(casted)
-            }),
+                Self::new(
+                    casted,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
+            }
         })
     }
 }
@@ -754,17 +1586,30 @@ where
                     input.ciphertext.on_cpu().to_owned(),
                     IntoId::num_blocks(cpu_key.message_modulus()),
                 );
-                Self::new(casted)
+                Self::new(
+                    casted,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(cuda_key) => with_thread_local_cuda_streams(|streams| {
-                let casted = cuda_key.key.cast_to_unsigned(
-                    input.ciphertext.into_gpu(),
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let casted = cuda_key.key.key.cast_to_unsigned(
+                    input.ciphertext.into_gpu(streams),
                     IntoId::num_blocks(cuda_key.message_modulus()),
                     streams,
                 );
-                Self::new(casted)
-            }),
+                Self::new(
+                    casted,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
+            }
         })
     }
 }
@@ -798,17 +1643,76 @@ where
                     .on_cpu()
                     .into_owned()
                     .into_radix(Id::num_blocks(cpu_key.message_modulus()), cpu_key.pbs_key());
-                Self::new(ciphertext)
+                Self::new(
+                    ciphertext,
+                    cpu_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
             }
             #[cfg(feature = "gpu")]
-            InternalServerKey::Cuda(cuda_key) => with_thread_local_cuda_streams(|streams| {
-                let inner = cuda_key.key.cast_to_unsigned(
-                    input.ciphertext.into_gpu().0,
+            InternalServerKey::Cuda(cuda_key) => {
+                let streams = &cuda_key.streams;
+                let inner = cuda_key.key.key.cast_to_unsigned(
+                    input.ciphertext.into_gpu(streams).0,
                     Id::num_blocks(cuda_key.message_modulus()),
                     streams,
                 );
-                Self::new(inner)
-            }),
+                Self::new(
+                    inner,
+                    cuda_key.tag.clone(),
+                    ReRandomizationMetadata::default(),
+                )
+            }
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("Hpu does not support this operation yet.")
+            }
+        })
+    }
+}
+
+impl<Id> ReRandomize for FheUint<Id>
+where
+    Id: FheUintId,
+{
+    fn add_to_re_randomization_context(
+        &self,
+        context: &mut crate::high_level_api::re_randomization::ReRandomizationContext,
+    ) {
+        let on_cpu = self.ciphertext.on_cpu();
+        context.inner.add_ciphertext(&*on_cpu);
+        context
+            .inner
+            .add_bytes(self.re_randomization_metadata.data());
+    }
+
+    fn re_randomize(
+        &mut self,
+        compact_public_key: &CompactPublicKey,
+        seed: ReRandomizationSeed,
+    ) -> crate::Result<()> {
+        global_state::with_internal_keys(|key| match key {
+            InternalServerKey::Cpu(key) => {
+                let Some(re_randomization_key) = key.re_randomization_cpk_casting_key() else {
+                    return Err(UninitializedReRandKey.into());
+                };
+
+                self.ciphertext.as_cpu_mut().re_randomize(
+                    &compact_public_key.key.key,
+                    &re_randomization_key,
+                    seed,
+                )?;
+
+                self.re_randomization_metadata_mut().clear();
+
+                Ok(())
+            }
+            #[cfg(feature = "gpu")]
+            InternalServerKey::Cuda(_cuda_key) => panic!("GPU does not support CPKReRandomize."),
+            #[cfg(feature = "hpu")]
+            InternalServerKey::Hpu(_device) => {
+                panic!("HPU does not support CPKReRandomize.")
+            }
         })
     }
 }
@@ -818,7 +1722,7 @@ mod test {
     use super::*;
     use crate::core_crypto::prelude::UnsignedInteger;
     use crate::prelude::*;
-    use crate::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    use crate::shortint::parameters::{AtomicPatternKind, PARAM_MESSAGE_2_CARRY_2_KS_PBS};
     use crate::shortint::{CiphertextModulus, PBSOrder};
     use crate::{generate_keys, set_server_key, ConfigBuilder, FheUint8};
     use rand::{thread_rng, Rng};
@@ -896,7 +1800,8 @@ mod test {
                 ct.ciphertext.as_cpu_mut().blocks.push(cloned_block);
             },
             &|i, ct: &mut Ct| {
-                ct.ciphertext.as_cpu_mut().blocks[i].pbs_order = PBSOrder::BootstrapKeyswitch;
+                ct.ciphertext.as_cpu_mut().blocks[i].atomic_pattern =
+                    AtomicPatternKind::Standard(PBSOrder::BootstrapKeyswitch);
             },
         ];
 

@@ -6,9 +6,16 @@ use super::{CompressedServerKey, ServerKey};
 use crate::high_level_api::backward_compatibility::keys::ClientKeyVersions;
 use crate::high_level_api::config::Config;
 use crate::high_level_api::keys::{CompactPrivateKey, IntegerClientKey};
-use crate::shortint::list_compression::CompressionPrivateKeys;
+use crate::high_level_api::SquashedNoiseCiphertextState;
+use crate::integer::ciphertext::NoiseSquashingCompressionPrivateKey;
+use crate::integer::compression_keys::CompressionPrivateKeys;
+use crate::integer::noise_squashing::{NoiseSquashingPrivateKey, NoiseSquashingPrivateKeyView};
+use crate::named::Named;
+use crate::prelude::Tagged;
+use crate::shortint::parameters::ShortintKeySwitchingParameters;
 use crate::shortint::MessageModulus;
-use concrete_csprng::seeders::Seed;
+use crate::Tag;
+use tfhe_csprng::seeders::Seed;
 use tfhe_versionable::Versionize;
 
 /// Key of the client
@@ -21,6 +28,7 @@ use tfhe_versionable::Versionize;
 #[versionize(ClientKeyVersions)]
 pub struct ClientKey {
     pub(crate) key: IntegerClientKey,
+    pub(crate) tag: Tag,
 }
 
 impl ClientKey {
@@ -29,6 +37,7 @@ impl ClientKey {
         let config: Config = config.into();
         Self {
             key: IntegerClientKey::from(config.inner),
+            tag: Tag::default(),
         }
     }
 
@@ -61,36 +70,52 @@ impl ClientKey {
         let config: Config = config.into();
         Self {
             key: IntegerClientKey::with_seed(config.inner, seed),
+            tag: Tag::default(),
         }
     }
 
+    pub fn computation_parameters(&self) -> crate::shortint::AtomicPatternParameters {
+        self.key.block_parameters()
+    }
+
+    #[allow(clippy::type_complexity)]
     pub fn into_raw_parts(
         self,
     ) -> (
         crate::integer::ClientKey,
-        Option<crate::shortint::WopbsParameters>,
         Option<CompactPrivateKey>,
         Option<CompressionPrivateKeys>,
+        Option<NoiseSquashingPrivateKey>,
+        Option<NoiseSquashingCompressionPrivateKey>,
+        Option<ShortintKeySwitchingParameters>,
+        Tag,
     ) {
-        self.key.into_raw_parts()
+        let (cks, cpk, cppk, nsk, nscpk, cpkrndp) = self.key.into_raw_parts();
+        (cks, cpk, cppk, nsk, nscpk, cpkrndp, self.tag)
     }
 
     pub fn from_raw_parts(
         key: crate::integer::ClientKey,
-        wopbs_block_parameters: Option<crate::shortint::WopbsParameters>,
         dedicated_compact_private_key: Option<(
             crate::integer::CompactPrivateKey<Vec<u64>>,
             crate::shortint::parameters::key_switching::ShortintKeySwitchingParameters,
         )>,
         compression_key: Option<CompressionPrivateKeys>,
+        noise_squashing_key: Option<NoiseSquashingPrivateKey>,
+        noise_squashing_compression_key: Option<NoiseSquashingCompressionPrivateKey>,
+        cpk_re_randomization_ksk_params: Option<ShortintKeySwitchingParameters>,
+        tag: Tag,
     ) -> Self {
         Self {
             key: IntegerClientKey::from_raw_parts(
                 key,
-                wopbs_block_parameters,
                 dedicated_compact_private_key,
                 compression_key,
+                noise_squashing_key,
+                noise_squashing_compression_key,
+                cpk_re_randomization_ksk_params,
             ),
+            tag,
         }
     }
 
@@ -110,10 +135,56 @@ impl ClientKey {
     pub(crate) fn message_modulus(&self) -> MessageModulus {
         self.key.block_parameters().message_modulus()
     }
+
+    /// Returns a view of the private key to be used to decrypt a squashed noise
+    /// ciphertext depending on its state
+    ///
+    /// # Panics
+    ///
+    /// Panics if the key supposed to be used for the given state cannot be found
+    pub(crate) fn private_noise_squashing_decryption_key(
+        &self,
+        state: SquashedNoiseCiphertextState,
+    ) -> NoiseSquashingPrivateKeyView<'_> {
+        match state {
+            SquashedNoiseCiphertextState::Normal => self
+                .key
+                .noise_squashing_private_key
+                .as_ref()
+                .map(|key| key.as_view())
+                .expect(
+                    "No noise squashing private key in your ClientKey, cannot decrypt. \
+                    Did you call `enable_noise_squashing` when creating your Config?",
+                ),
+            SquashedNoiseCiphertextState::PostDecompression => self
+                .key
+                .noise_squashing_compression_private_key
+                .as_ref()
+                .map(|key| key.private_key_view())
+                .expect(
+                    "No noise squashing private key in your ClientKey, cannot decrypt. \
+                    Did you call `enable_noise_squashing_compression` when creating your Config?",
+                ),
+        }
+    }
+}
+
+impl Tagged for ClientKey {
+    fn tag(&self) -> &Tag {
+        &self.tag
+    }
+
+    fn tag_mut(&mut self) -> &mut Tag {
+        &mut self.tag
+    }
 }
 
 impl AsRef<crate::integer::ClientKey> for ClientKey {
     fn as_ref(&self) -> &crate::integer::ClientKey {
         &self.key.key
     }
+}
+
+impl Named for ClientKey {
+    const NAME: &'static str = "high_level_api::ClientKey";
 }

@@ -25,7 +25,9 @@ pub struct CleartextCount(pub usize);
 pub struct CiphertextCount(pub usize);
 
 /// The number of ciphertexts in an lwe ciphertext list.
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Serialize, Deserialize, Versionize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Debug, Serialize, Deserialize, Versionize,
+)]
 #[versionize(LweCiphertextCountVersions)]
 pub struct LweCiphertextCount(pub usize);
 
@@ -58,7 +60,7 @@ pub struct GgswCiphertextCount(pub usize);
 pub struct LweSize(pub usize);
 
 impl LweSize {
-    /// Return the associated [`LweDimension`, Versionize].
+    /// Return the associated [`LweDimension`].
     pub fn to_lwe_dimension(&self) -> LweDimension {
         LweDimension(self.0 - 1)
     }
@@ -66,7 +68,7 @@ impl LweSize {
 
 /// The number of scalar in an LWE mask, or the length of an LWE secret key.
 #[derive(
-    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize, Versionize,
+    Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Serialize, Deserialize, Versionize,
 )]
 #[versionize(LweDimensionVersions)]
 pub struct LweDimension(pub usize);
@@ -137,8 +139,9 @@ pub struct PolynomialSize(pub usize);
 
 impl PolynomialSize {
     /// Return the associated [`PolynomialSizeLog`].
-    pub fn log2(&self) -> PolynomialSizeLog {
-        PolynomialSizeLog((self.0 as f64).log2().ceil() as usize)
+    /// If the polynomial size is not a power of 2, returns the floor of its log2
+    pub const fn log2(&self) -> PolynomialSizeLog {
+        PolynomialSizeLog(self.0.ilog2() as usize)
     }
 
     pub fn to_fourier_polynomial_size(&self) -> FourierPolynomialSize {
@@ -153,7 +156,7 @@ impl PolynomialSize {
     /// Inputs of a blind rotation are monomials which degree may be up to 2 * N because of the
     /// negacyclicity
     /// Converts a polynomial size into the log modulus of the inputs of a blind rotation
-    pub fn to_blind_rotation_input_modulus_log(&self) -> CiphertextModulusLog {
+    pub const fn to_blind_rotation_input_modulus_log(&self) -> CiphertextModulusLog {
         CiphertextModulusLog(self.log2().0 + 1)
     }
 }
@@ -264,7 +267,7 @@ pub struct MessageModulusLog(pub usize);
 pub struct ThreadCount(pub usize);
 
 /// The number of key bits grouped together in the multi_bit PBS
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize, Versionize)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash, Serialize, Deserialize, Versionize)]
 #[versionize(LweBskGroupingFactorVersions)]
 pub struct LweBskGroupingFactor(pub usize);
 
@@ -286,11 +289,26 @@ pub enum EncryptionKeyChoice {
     Small,
 }
 
+impl EncryptionKeyChoice {
+    pub const fn into_pbs_order(self) -> PBSOrder {
+        match self {
+            Self::Big => PBSOrder::KeyswitchBootstrap,
+            Self::Small => PBSOrder::BootstrapKeyswitch,
+        }
+    }
+}
+
 impl From<EncryptionKeyChoice> for PBSOrder {
     fn from(value: EncryptionKeyChoice) -> Self {
+        value.into_pbs_order()
+    }
+}
+
+impl From<PBSOrder> for EncryptionKeyChoice {
+    fn from(value: PBSOrder) -> Self {
         match value {
-            EncryptionKeyChoice::Big => Self::KeyswitchBootstrap,
-            EncryptionKeyChoice::Small => Self::BootstrapKeyswitch,
+            PBSOrder::KeyswitchBootstrap => Self::Big,
+            PBSOrder::BootstrapKeyswitch => Self::Small,
         }
     }
 }
@@ -377,3 +395,16 @@ impl std::ops::Mul<EncryptionNoiseSampleCount> for usize {
 /// A quantity representing a number of bytes used for noise generation during encryption.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct EncryptionNoiseByteCount(pub usize);
+
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Versionize)]
+#[versionize(RSigmaFactorVersions)]
+pub struct RSigmaFactor(pub f64);
+
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Versionize)]
+#[versionize(NoiseEstimationMeasureBoundVersions)]
+pub struct NoiseEstimationMeasureBound(pub f64);
+
+/// The size of a chunk in a chunked key.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Versionize)]
+#[versionize(ChunkSizeVersions)]
+pub struct ChunkSize(pub usize);

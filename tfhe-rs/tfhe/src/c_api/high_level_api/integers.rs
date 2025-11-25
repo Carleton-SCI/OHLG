@@ -1,7 +1,10 @@
 use super::utils::*;
 use crate::c_api::high_level_api::booleans::FheBool;
+use crate::c_api::high_level_api::i1024::I1024;
 use crate::c_api::high_level_api::i128::I128;
+use crate::c_api::high_level_api::i2048::I2048;
 use crate::c_api::high_level_api::i256::I256;
+use crate::c_api::high_level_api::i512::I512;
 use crate::c_api::high_level_api::u1024::U1024;
 use crate::c_api::high_level_api::u128::U128;
 use crate::c_api::high_level_api::u2048::U2048;
@@ -14,22 +17,44 @@ use std::ops::{
 };
 use std::os::raw::c_int;
 
+/// Defines all `cast_into` functions from the `from` type
+/// to the types list in the macro
 macro_rules! define_all_cast_into_for_integer_type {
     ($from:ty) => {
         define_casting_operation!($from =>
-            FheUint2, FheUint4, FheUint6, FheUint8, FheUint10, FheUint14, FheUint16, FheUint32, FheUint64, FheUint128, FheUint160, FheUint256,
-            FheInt2, FheInt4, FheInt6, FheInt8, FheInt10, FheInt12, FheInt14, FheInt16, FheInt32, FheInt64, FheInt128, FheInt160, FheInt256
+            FheUint2, FheUint4, FheUint6, FheUint8, FheUint10, FheUint12, FheUint14, FheUint16, FheUint32, FheUint64, FheUint128, FheUint160, FheUint256,
+            FheUint512, FheUint1024, FheUint2048,
+            FheInt2, FheInt4, FheInt6, FheInt8, FheInt10, FheInt12, FheInt14, FheInt16, FheInt32, FheInt64, FheInt128, FheInt160, FheInt256, FheInt512,
+            FheInt1024, FheInt2048,
         );
     };
 }
 
-/// Implement C functions for all the operations supported by a integer type,
-/// which should also be accessible from C API
-///
-/// We require the shift amount to be an unsigned type,
-/// so to be able to use that macro for signed integers (which have a signed clear type)
-/// we also accept an additional clear_shift_type
+#[cfg(feature = "extended-types")]
+macro_rules! define_all_cast_into_for_extended_integer_type {
+    ($from:ty) => {
+        define_casting_operation!($from =>
+            FheUint24, FheUint40, FheUint48, FheUint56, FheUint72, FheUint80,FheUint88, FheUint96,
+            FheUint104, FheUint112, FheUint120, FheUint136, FheUint144, FheUint152, FheUint168,
+            FheUint176, FheUint184, FheUint192, FheUint200, FheUint208, FheUint216, FheUint224,
+            FheUint232, FheUint240, FheUint248,
+            FheInt24, FheInt40, FheInt48, FheInt56, FheInt72, FheInt80,FheInt88, FheInt96,
+            FheInt104, FheInt112, FheInt120, FheInt136, FheInt144, FheInt152, FheInt168,
+            FheInt176, FheInt184, FheInt192, FheInt200, FheInt208, FheInt216, FheInt224,
+            FheInt232, FheInt240, FheInt248,
+        );
+    };
+}
+
+/// Implement C functions for all the operations supported by both signed and unsigned integer type.
 macro_rules! impl_operations_for_integer_type {
+    // `name`: name of the C wrapper type of the fhe type
+    // `fhe_unsigned_type`: type of the unsigned fhe equivalent (maybe be the same as `name`)
+    //                      Required as shift and rotations uses an amount encoded on an unsigned
+    // `clear_scalar_type`: type used for clear operations (u8, u32, etc.)
+    // `clear_shift_type`: type used for clear shift/rotation operations (u8, u32, etc.)
+    //                     Required as shift and rotations uses an amount encoded on an unsigned
+    //                     May be the same as `clear_scalar_type`
     (
         name: $name:ident,
         fhe_unsigned_type: $fhe_unsigned_type:ty,
@@ -265,12 +290,18 @@ macro_rules! impl_operations_for_integer_type {
     };
 }
 
-/// Creates a type that will act as an opaque wrapper
-/// around a tfhe integer.
+/// Defines the type that will act as an opaque wrapper` around a tfhe integer
+/// (either signed or unsigned)
 ///
-/// It also implements binary operations for this wrapper type
+/// It defines everything that is common between signed and unsigned (FheInt/FheUint)
 macro_rules! create_integer_wrapper_type {
-
+    // `name`: name of the C wrapper type of the fhe type
+    // `fhe_unsigned_type`: type of the unsigned fhe equivalent (maybe be the same as `name`)
+    //                      Required as shift and rotations uses an amount encoded on an unsigned
+    // `clear_scalar_type`: type used for clear operations (u8, u32, etc.)
+    // `clear_shift_type`: type used for clear shift/rotation operations (u8, u32, etc.)
+    //                     Required as shift and rotations uses an amount encoded on an unsigned
+    //                     May be the same as `clear_scalar_type`
     (
         name: $name:ident,
         fhe_unsigned_type: $fhe_unsigned_type:ty,
@@ -306,17 +337,13 @@ macro_rules! create_integer_wrapper_type {
 
         impl_safe_serialize_on_type!($name);
 
-        impl_safe_serialize_versioned_on_type!($name);
-
         ::paste::paste! {
-            impl_safe_deserialize_conformant_integer!($name, [<$name ConformanceParams>]);
-        }
-
-        ::paste::paste! {
-            impl_safe_deserialize_conformant_versioned_integer!($name, [<$name ConformanceParams>]);
+            impl_safe_deserialize_conformant_on_type!($name, [<$name ConformanceParams>]);
         }
 
         define_all_cast_into_for_integer_type!($name);
+        #[cfg(feature = "extended-types")]
+        define_all_cast_into_for_extended_integer_type!($name);
 
         // The compressed version of the ciphertext type
         ::paste::paste! {
@@ -332,11 +359,7 @@ macro_rules! create_integer_wrapper_type {
 
             impl_safe_serialize_on_type!([<Compressed $name>]);
 
-            impl_safe_serialize_versioned_on_type!([<Compressed $name>]);
-
-            impl_safe_deserialize_conformant_integer!([<Compressed $name>],  [<$name ConformanceParams>]);
-
-            impl_safe_deserialize_conformant_versioned_integer!([<Compressed $name>],  [<$name ConformanceParams>]);
+            impl_safe_deserialize_conformant_on_type!([<Compressed $name>],  [<$name ConformanceParams>]);
 
             #[no_mangle]
             pub unsafe extern "C" fn [<compressed_ $name:snake _decompress>](
@@ -379,235 +402,313 @@ macro_rules! create_integer_wrapper_type {
             clear_shift_type: $clear_scalar_type,
         );
     };
-
 }
-create_integer_wrapper_type!(name: FheUint2, clear_scalar_type: u8);
-create_integer_wrapper_type!(name: FheUint4, clear_scalar_type: u8);
-create_integer_wrapper_type!(name: FheUint6, clear_scalar_type: u8);
-create_integer_wrapper_type!(name: FheUint8, clear_scalar_type: u8);
-create_integer_wrapper_type!(name: FheUint10, clear_scalar_type: u16);
-create_integer_wrapper_type!(name: FheUint12, clear_scalar_type: u16);
-create_integer_wrapper_type!(name: FheUint14, clear_scalar_type: u16);
-create_integer_wrapper_type!(name: FheUint16, clear_scalar_type: u16);
-create_integer_wrapper_type!(name: FheUint32, clear_scalar_type: u32);
-create_integer_wrapper_type!(name: FheUint64, clear_scalar_type: u64);
-create_integer_wrapper_type!(name: FheUint128, clear_scalar_type: U128);
-create_integer_wrapper_type!(name: FheUint160, clear_scalar_type: U256);
-create_integer_wrapper_type!(name: FheUint256, clear_scalar_type: U256);
-create_integer_wrapper_type!(name: FheUint512, clear_scalar_type: U512);
-create_integer_wrapper_type!(name: FheUint1024, clear_scalar_type: U1024);
-create_integer_wrapper_type!(name: FheUint2048, clear_scalar_type: U2048);
 
-create_integer_wrapper_type!(
+/// Defines a complete wrapper for a FheUint
+macro_rules! create_fhe_uint_wrapper_type {
+      (
+        name: $name:ident,
+        clear_scalar_type: $clear_scalar_type:ty
+      ) => {
+            create_integer_wrapper_type!(
+                name: $name,
+                fhe_unsigned_type: $name,
+                clear_scalar_type: $clear_scalar_type,
+                clear_shift_type: $clear_scalar_type,
+            );
+
+            // Define oprf
+            ::paste::paste! {
+                #[no_mangle]
+                pub unsafe extern "C" fn [<generate_oblivious_pseudo_random_ $name:snake>](
+                    out_result: *mut *mut $name,
+                    seed_low_bytes: u64,
+                    seed_high_bytes: u64,
+                ) -> c_int {
+                    $crate::c_api::utils::catch_panic(|| {
+                        let seed_low_bytes: u128 = seed_low_bytes.into();
+                        let seed_high_bytes: u128 = seed_high_bytes.into();
+                        let seed = crate::Seed((seed_high_bytes << 64) | seed_low_bytes);
+
+                        let result = crate::FheUint::generate_oblivious_pseudo_random(
+                            seed,
+                        );
+                        *out_result = Box::into_raw(Box::new($name(result)));
+                    })
+                }
+
+                #[no_mangle]
+                pub unsafe extern "C" fn [<generate_oblivious_pseudo_random_bounded_ $name:snake>](
+                    out_result: *mut *mut $name,
+                    seed_low_bytes: u64,
+                    seed_high_bytes: u64,
+                    random_bits_count: u64,
+                ) -> c_int {
+
+                $crate::c_api::utils::catch_panic(|| {
+                    let seed_low_bytes: u128 = seed_low_bytes.into();
+                    let seed_high_bytes: u128 = seed_high_bytes.into();
+                    let seed = crate::Seed((seed_high_bytes << 64) | seed_low_bytes);
+
+                    let result = crate::FheUint::generate_oblivious_pseudo_random_bounded(
+                    seed,
+                    random_bits_count);
+                    *out_result = Box::into_raw(Box::new($name(result)));
+                    })
+                }
+            }
+      }
+}
+
+create_fhe_uint_wrapper_type!(name: FheUint2, clear_scalar_type: u8);
+create_fhe_uint_wrapper_type!(name: FheUint4, clear_scalar_type: u8);
+create_fhe_uint_wrapper_type!(name: FheUint6, clear_scalar_type: u8);
+create_fhe_uint_wrapper_type!(name: FheUint8, clear_scalar_type: u8);
+create_fhe_uint_wrapper_type!(name: FheUint10, clear_scalar_type: u16);
+create_fhe_uint_wrapper_type!(name: FheUint12, clear_scalar_type: u16);
+create_fhe_uint_wrapper_type!(name: FheUint14, clear_scalar_type: u16);
+create_fhe_uint_wrapper_type!(name: FheUint16, clear_scalar_type: u16);
+create_fhe_uint_wrapper_type!(name: FheUint32, clear_scalar_type: u32);
+create_fhe_uint_wrapper_type!(name: FheUint64, clear_scalar_type: u64);
+create_fhe_uint_wrapper_type!(name: FheUint128, clear_scalar_type: U128);
+create_fhe_uint_wrapper_type!(name: FheUint160, clear_scalar_type: U256);
+create_fhe_uint_wrapper_type!(name: FheUint256, clear_scalar_type: U256);
+create_fhe_uint_wrapper_type!(name: FheUint512, clear_scalar_type: U512);
+create_fhe_uint_wrapper_type!(name: FheUint1024, clear_scalar_type: U1024);
+create_fhe_uint_wrapper_type!(name: FheUint2048, clear_scalar_type: U2048);
+
+#[cfg(feature = "extended-types")]
+pub use extended_unsigned::*;
+
+#[cfg(feature = "extended-types")]
+mod extended_unsigned {
+    use super::*;
+
+    create_fhe_uint_wrapper_type!(name: FheUint24, clear_scalar_type: u32);
+    create_fhe_uint_wrapper_type!(name: FheUint40, clear_scalar_type: u64);
+    create_fhe_uint_wrapper_type!(name: FheUint48, clear_scalar_type: u64);
+    create_fhe_uint_wrapper_type!(name: FheUint56, clear_scalar_type: u64);
+    create_fhe_uint_wrapper_type!(name: FheUint72, clear_scalar_type: U128);
+    create_fhe_uint_wrapper_type!(name: FheUint80, clear_scalar_type: U128);
+    create_fhe_uint_wrapper_type!(name: FheUint88, clear_scalar_type: U128);
+    create_fhe_uint_wrapper_type!(name: FheUint96, clear_scalar_type: U128);
+    create_fhe_uint_wrapper_type!(name: FheUint104, clear_scalar_type: U128);
+    create_fhe_uint_wrapper_type!(name: FheUint112, clear_scalar_type: U128);
+    create_fhe_uint_wrapper_type!(name: FheUint120, clear_scalar_type: U128);
+    create_fhe_uint_wrapper_type!(name: FheUint136, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint144, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint152, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint168, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint176, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint184, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint192, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint200, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint208, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint216, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint224, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint232, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint240, clear_scalar_type: U256);
+    create_fhe_uint_wrapper_type!(name: FheUint248, clear_scalar_type: U256);
+}
+
+/// Defines a complete wrapper for a FheInt
+macro_rules! create_fhe_int_wrapper_type {
+      (
+        name: $name:ident,
+        fhe_unsigned_type: $fhe_unsigned_type:ty,
+        clear_scalar_type: $clear_scalar_type:ty,
+        clear_shift_type: $clear_shift_type:ty
+        $(,)?
+      ) => {
+            create_integer_wrapper_type!(
+                name: $name,
+                fhe_unsigned_type: $fhe_unsigned_type,
+                clear_scalar_type: $clear_scalar_type,
+                clear_shift_type: $clear_shift_type,
+            );
+
+            impl_unary_fn_on_type!($name =>
+                /// Returns the absolute value.
+                ///
+                /// (if x < 0 { -x } else { x })
+                abs
+            );
+
+            // Define oprf
+            ::paste::paste! {
+                #[no_mangle]
+                pub unsafe extern "C" fn [<generate_oblivious_pseudo_random_ $name:snake>](
+                    out_result: *mut *mut $name,
+                    seed_low_bytes: u64,
+                    seed_high_bytes: u64,
+                ) -> c_int {
+                    $crate::c_api::utils::catch_panic(|| {
+                        let seed_low_bytes: u128 = seed_low_bytes.into();
+                        let seed_high_bytes: u128 = seed_high_bytes.into();
+                        let seed = crate::Seed((seed_high_bytes << 64) | seed_low_bytes);
+
+                        let result = crate::FheInt::generate_oblivious_pseudo_random(
+                            seed,
+                        );
+                        *out_result = Box::into_raw(Box::new($name(result)));
+                    })
+                }
+
+                #[no_mangle]
+                pub unsafe extern "C" fn [<generate_oblivious_pseudo_random_bounded_ $name:snake>](
+                    out_result: *mut *mut $name,
+                    seed_low_bytes: u64,
+                    seed_high_bytes: u64,
+                    random_bits_count: u64,
+                ) -> c_int {
+                    $crate::c_api::utils::catch_panic(|| {
+                        let seed_low_bytes: u128 = seed_low_bytes.into();
+                        let seed_high_bytes: u128 = seed_high_bytes.into();
+                        let seed = crate::Seed((seed_high_bytes << 64) | seed_low_bytes);
+
+                        let result =
+                            crate::FheInt::generate_oblivious_pseudo_random_bounded(
+                                seed,
+                                random_bits_count,
+                            );
+                        *out_result = Box::into_raw(Box::new($name(result)));
+                    })
+                }
+            }
+      }
+}
+
+create_fhe_int_wrapper_type!(
     name: FheInt2,
     fhe_unsigned_type: FheUint2,
     clear_scalar_type: i8,
     clear_shift_type: u8,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt4,
     fhe_unsigned_type: FheUint4,
     clear_scalar_type: i8,
     clear_shift_type: u8,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt6,
     fhe_unsigned_type: FheUint6,
     clear_scalar_type: i8,
     clear_shift_type: u8,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt8,
     fhe_unsigned_type: FheUint8,
     clear_scalar_type: i8,
     clear_shift_type: u8,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt10,
     fhe_unsigned_type: FheUint10,
     clear_scalar_type: i16,
     clear_shift_type: u16,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt12,
     fhe_unsigned_type: FheUint12,
     clear_scalar_type: i16,
     clear_shift_type: u16,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt14,
     fhe_unsigned_type: FheUint14,
     clear_scalar_type: i16,
     clear_shift_type: u16,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt16,
     fhe_unsigned_type: FheUint16,
     clear_scalar_type: i16,
     clear_shift_type: u16,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt32,
     fhe_unsigned_type: FheUint32,
     clear_scalar_type: i32,
     clear_shift_type: u32,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt64,
     fhe_unsigned_type: FheUint64,
     clear_scalar_type: i64,
     clear_shift_type: u64,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt128,
     fhe_unsigned_type: FheUint128,
     clear_scalar_type: I128,
     clear_shift_type: U128,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt160,
     fhe_unsigned_type: FheUint160,
     clear_scalar_type: I256,
     clear_shift_type: U256,
 );
-create_integer_wrapper_type!(
+create_fhe_int_wrapper_type!(
     name: FheInt256,
     fhe_unsigned_type: FheUint256,
     clear_scalar_type: I256,
     clear_shift_type: U256,
 );
+create_fhe_int_wrapper_type!(
+    name: FheInt512,
+    fhe_unsigned_type: FheUint512,
+    clear_scalar_type: I512,
+    clear_shift_type: U512,
+);
+create_fhe_int_wrapper_type!(
+    name: FheInt1024,
+    fhe_unsigned_type: FheUint1024,
+    clear_scalar_type: I1024,
+    clear_shift_type: U1024,
+);
+create_fhe_int_wrapper_type!(
+    name: FheInt2048,
+    fhe_unsigned_type: FheUint2048,
+    clear_scalar_type: I2048,
+    clear_shift_type: U2048,
+);
+
+#[cfg(feature = "extended-types")]
+pub use extended_signed::*;
+
+#[cfg(feature = "extended-types")]
+mod extended_signed {
+    use super::*;
+
+    create_fhe_int_wrapper_type!(name: FheInt24, fhe_unsigned_type: FheUint24, clear_scalar_type: i32, clear_shift_type: u32);
+    create_fhe_int_wrapper_type!(name: FheInt40, fhe_unsigned_type: FheUint40, clear_scalar_type: i64, clear_shift_type: u64);
+    create_fhe_int_wrapper_type!(name: FheInt48, fhe_unsigned_type: FheUint48, clear_scalar_type: i64, clear_shift_type: u64);
+    create_fhe_int_wrapper_type!(name: FheInt56, fhe_unsigned_type: FheUint56, clear_scalar_type: i64, clear_shift_type: u64);
+    create_fhe_int_wrapper_type!(name: FheInt72, fhe_unsigned_type: FheUint72, clear_scalar_type: I128, clear_shift_type: U128);
+    create_fhe_int_wrapper_type!(name: FheInt80, fhe_unsigned_type: FheUint80, clear_scalar_type: I128, clear_shift_type: U128);
+    create_fhe_int_wrapper_type!(name: FheInt88, fhe_unsigned_type: FheUint88, clear_scalar_type: I128, clear_shift_type: U128);
+    create_fhe_int_wrapper_type!(name: FheInt96, fhe_unsigned_type: FheUint96, clear_scalar_type: I128, clear_shift_type: U128);
+    create_fhe_int_wrapper_type!(name: FheInt104, fhe_unsigned_type: FheUint104, clear_scalar_type: I128, clear_shift_type: U128);
+    create_fhe_int_wrapper_type!(name: FheInt112, fhe_unsigned_type: FheUint112, clear_scalar_type: I128, clear_shift_type: U128);
+    create_fhe_int_wrapper_type!(name: FheInt120, fhe_unsigned_type: FheUint120, clear_scalar_type: I128, clear_shift_type: U128);
+    create_fhe_int_wrapper_type!(name: FheInt136, fhe_unsigned_type: FheUint136, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt144, fhe_unsigned_type: FheUint144, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt152, fhe_unsigned_type: FheUint152, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt168, fhe_unsigned_type: FheUint168, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt176, fhe_unsigned_type: FheUint176, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt184, fhe_unsigned_type: FheUint184, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt192, fhe_unsigned_type: FheUint192, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt200, fhe_unsigned_type: FheUint200, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt208, fhe_unsigned_type: FheUint208, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt216, fhe_unsigned_type: FheUint216, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt224, fhe_unsigned_type: FheUint224, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt232, fhe_unsigned_type: FheUint232, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt240, fhe_unsigned_type: FheUint240, clear_scalar_type: I256, clear_shift_type: U256);
+    create_fhe_int_wrapper_type!(name: FheInt248, fhe_unsigned_type: FheUint248, clear_scalar_type: I256, clear_shift_type: U256);
+}
 
 define_all_cast_into_for_integer_type!(FheBool);
-
-macro_rules! impl_oprf_for_uint {
-    (
-        name: $name:ident
-    ) => {
-
-        ::paste::paste! {
-            #[no_mangle]
-            pub unsafe extern "C" fn [<generate_oblivious_pseudo_random_ $name:snake>](
-                out_result: *mut *mut $name,
-                seed_low_bytes: u64,
-                seed_high_bytes: u64,
-            ) -> c_int {
-                use crate::high_level_api::IntegerId;
-                $crate::c_api::utils::catch_panic(|| {
-                    let seed_low_bytes: u128 = seed_low_bytes.into();
-                    let seed_high_bytes: u128 = seed_high_bytes.into();
-                    let seed = crate::Seed((seed_high_bytes << 64) | seed_low_bytes);
-
-                    let result = crate::FheUint::generate_oblivious_pseudo_random(
-                        seed,
-                        <crate::[<$name Id>] as IntegerId>::num_bits() as u64
-                    );
-                    *out_result = Box::into_raw(Box::new($name(result)));
-                })
-            }
-        }
-
-        ::paste::paste! {
-            #[no_mangle]
-            pub unsafe extern "C" fn [<generate_oblivious_pseudo_random_bits_ $name:snake>](
-                out_result: *mut *mut $name,
-                seed_low_bytes: u64,
-                seed_high_bytes: u64,
-                random_bits_count: u64,
-            ) -> c_int {
-
-                $crate::c_api::utils::catch_panic(|| {
-                    let seed_low_bytes: u128 = seed_low_bytes.into();
-                    let seed_high_bytes: u128 = seed_high_bytes.into();
-                    let seed = crate::Seed((seed_high_bytes << 64) | seed_low_bytes);
-
-                    let result = crate::FheUint::generate_oblivious_pseudo_random(seed, random_bits_count);
-                    *out_result = Box::into_raw(Box::new($name(result)));
-                })
-            }
-        }
-    };
-}
-
-macro_rules! impl_oprf_for_int {
-    (
-        name: $name:ident
-    ) => {
-
-        ::paste::paste! {
-            #[no_mangle]
-            pub unsafe extern "C" fn [<generate_oblivious_pseudo_random_unsigned_ $name:snake>](
-                out_result: *mut *mut $name,
-                seed_low_bytes: u64,
-                seed_high_bytes: u64,
-                random_bits_count: u64,
-            ) -> c_int {
-                $crate::c_api::utils::catch_panic(|| {
-                    let seed_low_bytes: u128 = seed_low_bytes.into();
-                    let seed_high_bytes: u128 = seed_high_bytes.into();
-                    let seed = crate::Seed((seed_high_bytes << 64) | seed_low_bytes);
-
-                    let result =
-                        crate::FheInt::generate_oblivious_pseudo_random(
-                            seed,
-                            crate::high_level_api::SignedRandomizationSpec::Unsigned {
-                                random_bits_count
-                            },
-                        );
-                    *out_result = Box::into_raw(Box::new($name(result)));
-                })
-            }
-        }
-
-        ::paste::paste! {
-            #[no_mangle]
-            pub unsafe extern "C" fn [<generate_oblivious_pseudo_random_full_signed_range_ $name:snake>](
-                out_result: *mut *mut $name,
-                seed_low_bytes: u64,
-                seed_high_bytes: u64,
-            ) -> c_int {
-                $crate::c_api::utils::catch_panic(|| {
-                    let seed_low_bytes: u128 = seed_low_bytes.into();
-                    let seed_high_bytes: u128 = seed_high_bytes.into();
-                    let seed = crate::Seed((seed_high_bytes << 64) | seed_low_bytes);
-
-                    let result = crate::FheInt::generate_oblivious_pseudo_random(
-                        seed,
-                        crate::high_level_api::SignedRandomizationSpec::FullSigned,
-                    );
-                    *out_result = Box::into_raw(Box::new($name(result)));
-                })
-            }
-        }
-    };
-}
-
-impl_oprf_for_uint!(name: FheUint2);
-impl_oprf_for_uint!(name: FheUint4);
-impl_oprf_for_uint!(name: FheUint6);
-impl_oprf_for_uint!(name: FheUint8);
-impl_oprf_for_uint!(name: FheUint10);
-impl_oprf_for_uint!(name: FheUint12);
-impl_oprf_for_uint!(name: FheUint14);
-impl_oprf_for_uint!(name: FheUint16);
-impl_oprf_for_uint!(name: FheUint32);
-impl_oprf_for_uint!(name: FheUint64);
-impl_oprf_for_uint!(name: FheUint128);
-impl_oprf_for_uint!(name: FheUint160);
-impl_oprf_for_uint!(name: FheUint256);
-impl_oprf_for_uint!(name: FheUint512);
-impl_oprf_for_uint!(name: FheUint1024);
-impl_oprf_for_uint!(name: FheUint2048);
-
-impl_oprf_for_int!(name: FheInt2);
-impl_oprf_for_int!(name: FheInt4);
-impl_oprf_for_int!(name: FheInt6);
-impl_oprf_for_int!(name: FheInt8);
-impl_oprf_for_int!(name: FheInt10);
-impl_oprf_for_int!(name: FheInt12);
-impl_oprf_for_int!(name: FheInt14);
-impl_oprf_for_int!(name: FheInt16);
-impl_oprf_for_int!(name: FheInt32);
-impl_oprf_for_int!(name: FheInt64);
-impl_oprf_for_int!(name: FheInt128);
-impl_oprf_for_int!(name: FheInt160);
-impl_oprf_for_int!(name: FheInt256);
+#[cfg(feature = "extended-types")]
+define_all_cast_into_for_extended_integer_type!(FheBool);

@@ -1,0 +1,1 @@
+{"rule":"HE_VERB_AGR","sentence":"^\\QIt encrypts the data to be processed, encrypts the gates' parameters, serializes the data flow description, and sends them along with the HE bootstrapping key to the server side.\\E$"}

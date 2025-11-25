@@ -46,6 +46,20 @@ pub fn ggsw_ciphertext_list_size(
     ciphertext_count.0 * ggsw_ciphertext_size(glwe_size, polynomial_size, decomp_level_count)
 }
 
+pub fn fourier_ggsw_ciphertext_list_size(
+    ciphertext_count: GgswCiphertextCount,
+    glwe_size: GlweSize,
+    polynomial_size: PolynomialSize,
+    decomp_level_count: DecompositionLevelCount,
+) -> usize {
+    ciphertext_count.0
+        * fourier_ggsw_ciphertext_size(
+            glwe_size,
+            polynomial_size.to_fourier_polynomial_size(),
+            decomp_level_count,
+        )
+}
+
 pub fn ggsw_ciphertext_list_encryption_fork_config<Scalar, MaskDistribution, NoiseDistribution>(
     ggsw_ciphertext_count: GgswCiphertextCount,
     glwe_size: GlweSize,
@@ -359,13 +373,15 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 
     type EntityViewMetadata = GgswCiphertextCreationMetadata<Self::Element>;
 
-    type EntityView<'this> = GgswCiphertextView<'this, Self::Element>
+    type EntityView<'this>
+        = GgswCiphertextView<'this, Self::Element>
     where
         Self: 'this;
 
     type SelfViewMetadata = GgswCiphertextListCreationMetadata<Self::Element>;
 
-    type SelfView<'this> = GgswCiphertextListView<'this, Self::Element>
+    type SelfView<'this>
+        = GgswCiphertextListView<'this, Self::Element>
     where
         Self: 'this;
 
@@ -400,11 +416,13 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 impl<Scalar: UnsignedInteger, C: ContainerMut<Element = Scalar>> ContiguousEntityContainerMut
     for GgswCiphertextList<C>
 {
-    type EntityMutView<'this> = GgswCiphertextMutView<'this, Self::Element>
+    type EntityMutView<'this>
+        = GgswCiphertextMutView<'this, Self::Element>
     where
         Self: 'this;
 
-    type SelfMutView<'this> = GgswCiphertextListMutView<'this, Self::Element>
+    type SelfMutView<'this>
+        = GgswCiphertextListMutView<'this, Self::Element>
     where
         Self: 'this;
 }

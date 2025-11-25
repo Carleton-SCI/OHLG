@@ -5,15 +5,21 @@ use std::io::{Error, ErrorKind};
 // TODO use .gitignore or git to resolve ignored files
 const DIR_TO_IGNORE: [&str; 2] = [".git", "target"];
 
-const FILES_TO_IGNORE: [&str; 4] = [
+const FILES_TO_IGNORE: [&str; 9] = [
     // This contains fragments of code that are unrelated to TFHE-rs
-    "tfhe/docs/tutorials/sha256_bool.md",
-    // This contains fragments of code coming from the tutorial that cannot be run as a doctest
-    "tfhe/examples/fhe_strings/README.md",
+    "tfhe/docs/tutorials/sha256-bool.md",
     // TODO: This contains code that could be executed as a trivium docstring
     "apps/trivium/README.md",
     // TODO: should we test this ?
     "utils/tfhe-versionable/README.md",
+    // TODO: find a way to test the tfhe-fft readme
+    "tfhe-fft/README.md",
+    // TODO: find a way to test the tfhe-ntt readme
+    "tfhe-ntt/README.md",
+    "utils/tfhe-lints/README.md",
+    "CONTRIBUTING.md",
+    "backends/tfhe-hpu-backend/README.md",
+    "utils/tfhe-backward-compat-data/README.md",
 ];
 
 pub fn check_tfhe_docs_are_tested() -> Result<(), Error> {
@@ -94,7 +100,7 @@ pub fn check_tfhe_docs_are_tested() -> Result<(), Error> {
         .into_iter()
         .filter_map(|entry| {
             let path = entry.path().canonicalize().ok()?;
-            if path.is_file() && path.extension().map_or(false, |e| e == "md") {
+            if path.is_file() && path.extension().is_some_and(|e| e == "md") {
                 let file_content = std::fs::read_to_string(&path).ok()?;
                 if file_content.contains("```rust") {
                     Some(path.to_path_buf())
@@ -113,15 +119,33 @@ pub fn check_tfhe_docs_are_tested() -> Result<(), Error> {
     }
 
     for value_to_remove in FILES_TO_IGNORE {
-        let path_to_remove = curr_dir.join(value_to_remove).canonicalize()?.to_path_buf();
+        let file_to_ignore = curr_dir.join(value_to_remove);
+        if !file_to_ignore.exists() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Encountered errors while ignoring files: {} does not exist",
+                    file_to_ignore.display()
+                ),
+            ));
+        }
+        let path_to_remove = file_to_ignore.canonicalize()?.to_path_buf();
         doc_files.remove(&path_to_remove);
     }
 
     let difference = doc_files.difference(&tested_files);
+    let files_that_may_not_exist = tested_files.difference(&doc_files);
+    let files_that_dont_exist: Vec<_> = files_that_may_not_exist
+        .into_iter()
+        .filter(|p| !p.exists())
+        .collect();
 
-    let debug_format = format!("missing file from user doc tests: {difference:#?}");
+    let debug_format = format!(
+        "missing file from user doc tests: {difference:#?}\n\
+        files that are tested but don't exist: {files_that_dont_exist:#?}"
+    );
 
-    if difference.count() != 0 {
+    if difference.count() != 0 || !files_that_dont_exist.is_empty() {
         return Err(Error::new(ErrorKind::NotFound, debug_format));
     }
 

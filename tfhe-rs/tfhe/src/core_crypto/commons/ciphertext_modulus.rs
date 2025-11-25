@@ -10,21 +10,16 @@ use std::cmp::Ordering;
 use std::fmt::Display;
 use std::marker::PhantomData;
 
+use super::parameters::CiphertextModulusLog;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-/// Private enum to avoid end user mis-instantiating a CiphertextModulus
+/// Private enum to avoid end user instantiating a bad CiphertextModulus
 ///
 /// NonZeroU128 allows to always have a correct modulus and to have an enum that is no bigger than a
 /// u128 with the 0 optimization as the tag then corresponds to the Native variant.
 enum CiphertextModulusInner {
     Native,
     Custom(NonZeroU128),
-}
-
-#[cfg(bench)]
-impl Default for CiphertextModulusInner {
-    fn default() -> Self {
-        CiphertextModulusInner::Native
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Versionize)]
@@ -37,7 +32,6 @@ impl Default for CiphertextModulusInner {
     try_from = "SerializableCiphertextModulus",
     into = "SerializableCiphertextModulus"
 )]
-#[cfg_attr(bench, derive(Default))]
 /// Structure representing a [`CiphertextModulus`] often noted $q$.
 pub struct CiphertextModulus<Scalar: UnsignedInteger> {
     inner: CiphertextModulusInner,
@@ -282,6 +276,15 @@ impl<Scalar: UnsignedInteger> CiphertextModulus<Scalar> {
         }
     }
 
+    pub fn into_modulus_log(self) -> CiphertextModulusLog {
+        match self.inner {
+            CiphertextModulusInner::Native => CiphertextModulusLog(Scalar::BITS),
+            CiphertextModulusInner::Custom(custom_mod) => {
+                CiphertextModulusLog(custom_mod.get().ceil_ilog2() as usize)
+            }
+        }
+    }
+
     pub fn get_custom_modulus_as_optional_scalar(&self) -> Option<Scalar> {
         match self.inner {
             CiphertextModulusInner::Native => None,
@@ -352,6 +355,23 @@ impl<Scalar: UnsignedInteger> CiphertextModulus<Scalar> {
                 }
             }
         }
+    }
+
+    pub fn raw_modulus_float(&self) -> f64 {
+        match self.inner {
+            CiphertextModulusInner::Native => 2_f64.powi(Scalar::BITS as i32),
+            CiphertextModulusInner::Custom(non_zero) => non_zero.get() as f64,
+        }
+    }
+
+    pub const fn associated_scalar_bits(&self) -> usize {
+        Scalar::BITS
+    }
+}
+
+impl<Scalar: UnsignedInteger> From<CiphertextModulus<Scalar>> for CiphertextModulusLog {
+    fn from(value: CiphertextModulus<Scalar>) -> Self {
+        value.into_modulus_log()
     }
 }
 

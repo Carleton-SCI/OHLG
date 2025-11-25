@@ -1,9 +1,11 @@
 use crate::core_crypto::commons::ciphertext_modulus::CiphertextModulus;
 use crate::core_crypto::commons::math::decomposition::{
-    SignedDecompositionIter, SignedDecompositionNonNativeIter, ValueSign,
+    SignedDecompositionIter, SignedDecompositionNonNativeIter, SliceSignedDecompositionIter,
+    SliceSignedDecompositionNonNativeIter, ValueSign,
 };
 use crate::core_crypto::commons::numeric::{CastInto, UnsignedInteger};
 use crate::core_crypto::commons::parameters::{DecompositionBaseLog, DecompositionLevelCount};
+use crate::core_crypto::prelude::{Cleartext, Plaintext};
 use std::marker::PhantomData;
 
 /// A structure which allows to decompose unsigned integers into a set of smaller terms.
@@ -44,6 +46,25 @@ pub fn native_closest_representable<Scalar: UnsignedInteger>(
     res &= Scalar::TWO.wrapping_neg();
     // Shift back to the right position
     res << shift
+}
+
+/// With
+///
+/// B = 2^bit_count
+/// val < B
+/// random € [0, 1]
+///
+/// returns 1 if the following if condition is true otherwise 0
+///
+/// (val > B / 2) || ((val == B / 2) && (random == 1))
+#[inline(always)]
+fn balanced_rounding_condition_bit_trick<Scalar: UnsignedInteger>(
+    val: Scalar,
+    bit_count: usize,
+    random: Scalar,
+) -> Scalar {
+    let shifted_random = random << (bit_count - 1);
+    ((val.wrapping_sub(Scalar::ONE) | shifted_random) & val) >> (bit_count - 1)
 }
 
 impl<Scalar> SignedDecomposer<Scalar>
@@ -125,6 +146,42 @@ where
         native_closest_representable(input, self.level_count, self.base_log)
     }
 
+    /// Decode a plaintext value using the decoder to compute the closest representable.
+    pub fn decode_plaintext(&self, input: Plaintext<Scalar>) -> Cleartext<Scalar> {
+        let shift = Scalar::BITS - self.level_count * self.base_log;
+        Cleartext(self.closest_representable(input.0) >> shift)
+    }
+
+    #[inline(always)]
+    pub fn init_decomposer_state(&self, input: Scalar) -> Scalar {
+        // The closest number representable by the decomposition can be computed by performing
+        // the rounding at the appropriate bit.
+
+        // We compute the number of least significant bits which can not be represented by the
+        // decomposition
+        // Example with level_count = 3, base_log = 4 and BITS == 64 -> 52
+        let rep_bit_count = self.level_count * self.base_log;
+        let non_rep_bit_count: usize = Scalar::BITS - rep_bit_count;
+        // Move the representable bits + 1 to the LSB, with our example :
+        //       |-----| 64 - (64 - 12 - 1) == 13 bits
+        // 0....0XX...XX
+        let mut res = input >> (non_rep_bit_count - 1);
+        // Fetch the first bit value as we need it for a balanced rounding
+        let rounding_bit = res & Scalar::ONE;
+        // Add one to do the rounding by adding the half interval
+        res += Scalar::ONE;
+        // Discard the LSB which was the one deciding in which direction we round
+        res >>= 1;
+        // Keep the low base_log * level bits
+        let mod_mask = Scalar::MAX >> (Scalar::BITS - rep_bit_count);
+        res &= mod_mask;
+        // Control bit about whether we should balance the state
+        // This is equivalent to res > 2^(base_log * l) || (res == 2^(base_log * l) && random == 1)
+        let need_balance = balanced_rounding_condition_bit_trick(res, rep_bit_count, rounding_bit);
+        // Balance depending on the control bit
+        res.wrapping_sub(need_balance << rep_bit_count)
+    }
+
     /// Generate an iterator over the terms of the decomposition of the input.
     ///
     /// # Warning
@@ -161,7 +218,7 @@ where
         // Note that there would be no sense of making the decomposition on an input which was
         // not rounded to the closest representable first. We then perform it before decomposing.
         SignedDecompositionIter::new(
-            self.closest_representable(input),
+            self.init_decomposer_state(input),
             DecompositionBaseLog(self.base_log),
             DecompositionLevelCount(self.level_count),
         )
@@ -192,6 +249,54 @@ where
         } else {
             None
         }
+    }
+
+    /// Generates an iterator-like object over tensors of terms of the decomposition of the input
+    /// tensor.
+    ///
+    /// # Warning
+    ///
+    /// The returned iterator yields the terms $(\tilde{\theta}^{(a)}\_i)\_{a\in\mathbb{N}}$ in
+    /// order of decreasing $i$.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tfhe::core_crypto::commons::math::decomposition::SignedDecomposer;
+    /// use tfhe::core_crypto::commons::numeric::UnsignedInteger;
+    /// use tfhe::core_crypto::prelude::{DecompositionBaseLog, DecompositionLevelCount};
+    /// let decomposer =
+    ///     SignedDecomposer::<u32>::new(DecompositionBaseLog(4), DecompositionLevelCount(3));
+    /// let decomposable = vec![1_340_987_234_u32, 1_340_987_234_u32];
+    /// let mut decomp = decomposer.decompose_slice(&decomposable);
+    ///
+    /// let mut count = 0;
+    /// while let Some(term) = decomp.next_term() {
+    ///     assert!(1 <= term.level().0);
+    ///     assert!(term.level().0 <= 3);
+    ///     for elmt in term.as_slice().iter() {
+    ///         let signed_term = elmt.into_signed();
+    ///         let half_basis = 2i32.pow(4) / 2i32;
+    ///         assert!(-half_basis <= signed_term);
+    ///         assert!(signed_term < half_basis);
+    ///     }
+    ///     count += 1;
+    /// }
+    /// assert_eq!(count, 3);
+    /// ```
+    pub fn decompose_slice(&self, input: &[Scalar]) -> SliceSignedDecompositionIter<Scalar> {
+        // Note that there would be no sense of making the decomposition on an input which was
+        // not rounded to the closest representable first. We then perform it before decomposing.
+        let closest: Vec<Scalar> = input
+            .iter()
+            .map(|input| self.init_decomposer_state(*input))
+            .collect();
+
+        SliceSignedDecompositionIter::new(
+            closest,
+            DecompositionBaseLog(self.base_log),
+            DecompositionLevelCount(self.level_count),
+        )
     }
 }
 
@@ -388,6 +493,28 @@ where
         }
     }
 
+    /// Decode a plaintext value using the decoder modulo a custom modulus.
+    pub fn decode_plaintext(&self, input: Plaintext<Scalar>) -> Cleartext<Scalar> {
+        let input = input.0;
+
+        let ciphertext_modulus_as_scalar: Scalar =
+            self.ciphertext_modulus.get_custom_modulus().cast_into();
+        let mut negate_input = false;
+        let mut ptxt = input;
+        if input > ciphertext_modulus_as_scalar >> 1 {
+            negate_input = true;
+            ptxt = ptxt.wrapping_neg_custom_mod(ciphertext_modulus_as_scalar);
+        }
+        let number_of_message_bits = self.base_log().0 * self.level_count().0;
+        let delta = ciphertext_modulus_as_scalar >> number_of_message_bits;
+        let half_delta = delta >> 1;
+        let mut decoded = (ptxt + half_delta) / delta;
+        if negate_input {
+            decoded = decoded.wrapping_neg_custom_mod(ciphertext_modulus_as_scalar);
+        }
+        Cleartext(decoded)
+    }
+
     #[inline(always)]
     pub fn init_decomposer_state(&self, input: Scalar) -> (Scalar, ValueSign) {
         let ciphertext_modulus_as_scalar: Scalar =
@@ -514,6 +641,108 @@ where
             }))
         } else {
             None
+        }
+    }
+
+    /// Generates an iterator-like object over tensors of terms of the decomposition of the input
+    /// tensor.
+    ///
+    /// # Warning
+    ///
+    /// The returned iterator yields the terms $(\tilde{\theta}^{(a)}\_i)\_{a\in\mathbb{N}}$ in
+    /// order of decreasing $i$.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use tfhe::core_crypto::commons::math::decomposition::SignedDecomposerNonNative;
+    /// use tfhe::core_crypto::commons::numeric::UnsignedInteger;
+    /// use tfhe::core_crypto::prelude::{
+    ///     CiphertextModulus, DecompositionBaseLog, DecompositionLevelCount,
+    /// };
+    ///
+    /// let decomposition_base_log = DecompositionBaseLog(4);
+    /// let decomposition_level_count = DecompositionLevelCount(3);
+    /// let ciphertext_modulus = CiphertextModulus::try_new((1 << 64) - (1 << 32) + 1).unwrap();
+    ///
+    /// let decomposer = SignedDecomposerNonNative::new(
+    ///     decomposition_base_log,
+    ///     decomposition_level_count,
+    ///     ciphertext_modulus,
+    /// );
+    ///
+    /// let basis = 2i64.pow(decomposition_base_log.0.try_into().unwrap());
+    /// let half_basis = basis / 2;
+    ///
+    /// let decomposable = [9223372032559808513u64, 1u64 << 63];
+    /// let mut decomp = decomposer.decompose_slice(&decomposable);
+    ///
+    /// let mut count = 0;
+    /// while let Some(term) = decomp.next_term() {
+    ///     assert!(1 <= term.level().0);
+    ///     assert!(term.level().0 <= 3);
+    ///     for elmt in term.as_slice().iter() {
+    ///         let signed_term = elmt.into_signed();
+    ///         assert!(-half_basis <= signed_term);
+    ///         assert!(signed_term <= half_basis);
+    ///     }
+    ///     count += 1;
+    /// }
+    /// assert_eq!(count, 3);
+    /// ```
+    pub fn decompose_slice(
+        &self,
+        input: &[Scalar],
+    ) -> SliceSignedDecompositionNonNativeIter<Scalar> {
+        let (abs_closest_representables, signs): (Vec<Scalar>, Vec<ValueSign>) = input
+            .iter()
+            .map(|input| self.init_decomposer_state(*input))
+            .unzip();
+
+        SliceSignedDecompositionNonNativeIter::new(
+            abs_closest_representables,
+            signs,
+            DecompositionBaseLog(self.base_log),
+            DecompositionLevelCount(self.level_count),
+            self.ciphertext_modulus,
+        )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_balanced_rounding_condition_as_bit_trick() {
+        for rep_bit_count in 1..13 {
+            println!("{rep_bit_count}");
+            let b = 1u64 << rep_bit_count;
+            let b_over_2 = b / 2;
+
+            for val in 0..b {
+                for random in [0, 1] {
+                    let test_val = (val > b_over_2) || ((val == b_over_2) && (random == 1));
+                    let bit_trick =
+                        balanced_rounding_condition_bit_trick(val, rep_bit_count, random);
+                    let bit_trick_as_bool = if bit_trick == 1 {
+                        true
+                    } else if bit_trick == 0 {
+                        false
+                    } else {
+                        panic!("Bit trick result was not a bit.");
+                    };
+
+                    assert_eq!(
+                        test_val, bit_trick_as_bool,
+                        "val    ={val}\n\
+                         val_b  ={val:064b}\n\
+                         random ={random}\n\
+                         expected: {test_val}\n\
+                         got     : {bit_trick_as_bool}"
+                    );
+                }
+            }
         }
     }
 }

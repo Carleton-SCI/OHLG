@@ -4,8 +4,12 @@ use crate::core_crypto::prelude::UnsignedNumeric;
 use crate::integer::backward_compatibility::ciphertext::{
     BaseCrtCiphertextVersions, BaseRadixCiphertextVersions, BaseSignedRadixCiphertextVersions,
 };
-use crate::integer::block_decomposition::{BlockRecomposer, RecomposableFrom};
-use crate::integer::client_key::{sign_extend_partial_number, RecomposableSignedInteger};
+use crate::integer::block_decomposition::{
+    BlockRecomposer, RecomposableFrom, RecomposableSignedInteger,
+};
+use crate::integer::ciphertext::{re_randomize_ciphertext_blocks, ReRandomizationSeed};
+use crate::integer::key_switching_key::KeySwitchingKeyMaterialView;
+use crate::integer::CompactPublicKey;
 use crate::shortint::ciphertext::NotTrivialCiphertextError;
 use crate::shortint::parameters::CiphertextConformanceParams;
 use crate::shortint::Ciphertext;
@@ -36,9 +40,10 @@ impl<T: ParameterSetConformant<ParameterSet = CiphertextConformanceParams>> Para
     type ParameterSet = RadixCiphertextConformanceParams;
 
     fn is_conformant(&self, params: &RadixCiphertextConformanceParams) -> bool {
-        self.blocks.len() == params.num_blocks_per_integer
-            && self
-                .blocks
+        let Self { blocks } = self;
+
+        blocks.len() == params.num_blocks_per_integer
+            && blocks
                 .iter()
                 .all(|block| block.is_conformant(&params.shortint_params))
     }
@@ -67,10 +72,10 @@ impl RadixCiphertext {
     ///
     /// ```rust
     /// use tfhe::integer::{gen_keys_radix, RadixCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // 8 bits
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 4);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, 4);
     ///
     /// let msg = 124u8;
     /// let msg2 = 17u8;
@@ -101,15 +106,37 @@ impl RadixCiphertext {
     where
         Clear: UnsignedNumeric + RecomposableFrom<u64>,
     {
-        let bits_in_block = self.blocks[0].message_modulus.0.ilog2();
-        let mut recomposer = BlockRecomposer::<Clear>::new(bits_in_block);
-
-        for encrypted_block in &self.blocks {
-            let decrypted_block = encrypted_block.decrypt_trivial_message_and_carry()?;
-            recomposer.add_unmasked(decrypted_block);
+        if !self.blocks.iter().all(|b| b.is_trivial()) {
+            return Err(NotTrivialCiphertextError);
         }
 
-        Ok(recomposer.value())
+        let bits_in_block = self.blocks[0].message_modulus.0.ilog2();
+
+        let decrypted_block_iter = self
+            .blocks
+            .iter()
+            .map(|block| block.decrypt_trivial_message_and_carry().unwrap());
+
+        Ok(BlockRecomposer::recompose_unsigned(
+            decrypted_block_iter,
+            bits_in_block,
+        ))
+    }
+
+    pub fn re_randomize(
+        &mut self,
+        compact_public_key: &CompactPublicKey,
+        key_switching_key_material: &KeySwitchingKeyMaterialView,
+        seed: ReRandomizationSeed,
+    ) -> crate::Result<()> {
+        re_randomize_ciphertext_blocks(
+            &mut self.blocks,
+            compact_public_key,
+            key_switching_key_material,
+            seed,
+        )?;
+
+        Ok(())
     }
 }
 
@@ -137,9 +164,10 @@ impl<T: ParameterSetConformant<ParameterSet = CiphertextConformanceParams>> Para
     type ParameterSet = RadixCiphertextConformanceParams;
 
     fn is_conformant(&self, params: &RadixCiphertextConformanceParams) -> bool {
-        self.blocks.len() == params.num_blocks_per_integer
-            && self
-                .blocks
+        let Self { blocks } = self;
+
+        blocks.len() == params.num_blocks_per_integer
+            && blocks
                 .iter()
                 .all(|block| block.is_conformant(&params.shortint_params))
     }
@@ -167,11 +195,11 @@ impl SignedRadixCiphertext {
     /// # Example
     ///
     /// ```rust
-    /// use tfhe::integer::{gen_keys_radix, RadixCiphertext, SignedRadixCiphertext};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::integer::{gen_keys_radix, SignedRadixCiphertext};
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // 8 bits
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, 4);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, 4);
     ///
     /// let msg = -35i8;
     /// let msg2 = 17i8;
@@ -202,17 +230,37 @@ impl SignedRadixCiphertext {
     where
         Clear: RecomposableSignedInteger,
     {
-        let bits_in_block = self.blocks[0].message_modulus.0.ilog2();
-        let mut recomposer = BlockRecomposer::<Clear>::new(bits_in_block);
-
-        for encrypted_block in &self.blocks {
-            let decrypted_block = encrypted_block.decrypt_trivial_message_and_carry()?;
-            recomposer.add_unmasked(decrypted_block);
+        if !self.blocks.iter().all(|b| b.is_trivial()) {
+            return Err(NotTrivialCiphertextError);
         }
 
-        let num_bits_in_ctxt = bits_in_block * self.blocks.len() as u32;
-        let unpadded_value = recomposer.value();
-        Ok(sign_extend_partial_number(unpadded_value, num_bits_in_ctxt))
+        let bits_in_block = self.blocks[0].message_modulus.0.ilog2();
+
+        let decrypted_block_iter = self
+            .blocks
+            .iter()
+            .map(|block| block.decrypt_trivial_message_and_carry().unwrap());
+
+        Ok(BlockRecomposer::recompose_signed(
+            decrypted_block_iter,
+            bits_in_block,
+        ))
+    }
+
+    pub fn re_randomize(
+        &mut self,
+        compact_public_key: &CompactPublicKey,
+        key_switching_key_material: &KeySwitchingKeyMaterialView,
+        seed: ReRandomizationSeed,
+    ) -> crate::Result<()> {
+        re_randomize_ciphertext_blocks(
+            &mut self.blocks,
+            compact_public_key,
+            key_switching_key_material,
+            seed,
+        )?;
+
+        Ok(())
     }
 }
 

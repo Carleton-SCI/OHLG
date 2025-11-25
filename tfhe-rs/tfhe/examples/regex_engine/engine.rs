@@ -45,7 +45,7 @@ fn build_branches(
     re: &RegExpr,
     c_pos: usize,
 ) -> Vec<(LazyExecution, usize)> {
-    trace!("program pointer: regex={:?}, content pos={}", re, c_pos);
+    trace!("program pointer: regex={re:?}, content pos={c_pos}");
     match re {
         RegExpr::Sof => {
             if c_pos == 0 {
@@ -146,8 +146,7 @@ fn build_branches(
                 build_branches(
                     content,
                     &(RegExpr::Seq {
-                        re_xs: std::iter::repeat(*repeat_re.clone())
-                            .take(std::cmp::max(1, at_least))
+                        re_xs: std::iter::repeat_n(*repeat_re.clone(), std::cmp::max(1, at_least))
                             .collect(),
                     }),
                     c_pos,
@@ -213,16 +212,15 @@ fn build_branches(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
     use crate::engine::has_match;
     use test_case::test_case;
 
     use crate::ciphertext::{encrypt_str, gen_keys, StringCiphertext};
-    use lazy_static::lazy_static;
     use tfhe::integer::{RadixClientKey, ServerKey};
 
-    lazy_static! {
-        pub static ref KEYS: (RadixClientKey, ServerKey) = gen_keys();
-    }
+    pub static KEYS: LazyLock<(RadixClientKey, ServerKey)> = LazyLock::new(|| gen_keys());
 
     #[test_case("ab", "/ab/", 1)]
     #[test_case("b", "/ab/", 0)]
@@ -258,7 +256,7 @@ mod tests {
         let ct_content: StringCiphertext = encrypt_str(&KEYS.0, content).unwrap();
         let ct_res = has_match(&KEYS.1, &ct_content, pattern).unwrap();
 
-        let got = KEYS.0.decrypt(&ct_res);
+        let got: u64 = KEYS.0.decrypt(&ct_res);
         assert_eq!(exp, got);
     }
 }

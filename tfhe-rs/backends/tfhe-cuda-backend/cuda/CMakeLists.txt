@@ -34,7 +34,13 @@ else()
   set(CUDA_SUCCESS "FALSE")
 endif()
 
-if(${CUDA_SUCCESS})
+if(${MULTI_ARCH})
+  message(STATUS "Multi-architecture GPU build enabled, 75, 80, 86, 89")
+  message(STATUS "CUDA Version: ${CUDA_VERSION_STRING}")
+  message(STATUS "CUDA Path: ${CUDA_TOOLKIT_ROOT_DIR}")
+  message(STATUS "CUDA Libraries: ${CUDA_LIBRARIES}")
+  message(STATUS "CUDA Performance Primitives: ${CUDA_npp_LIBRARY}")
+elseif(${CUDA_SUCCESS})
   message(STATUS "CUDA Architecture: ${ARCH}")
   message(STATUS "CUDA Version: ${CUDA_VERSION_STRING}")
   message(STATUS "CUDA Path: ${CUDA_TOOLKIT_ROOT_DIR}")
@@ -46,6 +52,8 @@ endif()
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
+else()
+  message("Building CUDA backend in ${CMAKE_BUILD_TYPE}")
 endif()
 
 # Add OpenMP support
@@ -56,7 +64,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}  -g")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler ${OpenMP_CXX_FLAGS}")
-if(${CUDA_SUCCESS})
+if(${MULTI_ARCH})
+  set(CUDA_ARCH "750")
+  set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89)
+elseif(${CUDA_SUCCESS})
   set(CMAKE_CUDA_ARCHITECTURES native)
   string(REPLACE "-arch=sm_" "" CUDA_ARCH "${ARCH}")
   set(CUDA_ARCH "${CUDA_ARCH}0")
@@ -67,11 +78,41 @@ endif()
 
 add_compile_definitions(CUDA_ARCH=${CUDA_ARCH})
 
-# in production, should use -arch=sm_70 --ptxas-options=-v to see register spills -lineinfo for better debugging
+string(TOLOWER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_LOWERCASE)
+
+# Check if the DEBUG flag is defined
+if(CMAKE_BUILD_TYPE_LOWERCASE STREQUAL "debug")
+  # Debug mode
+  message("Compiling in Debug mode")
+  add_definitions(-DDEBUG)
+  set(OPTIMIZATION_FLAGS "${OPTIMIZATION_FLAGS} -O0 -G -g")
+  set(USE_NVTOOLS 1)
+elseif(CMAKE_BUILD_TYPE_LOWERCASE STREQUAL "debugonlycpu")
+  message("Compiling GPU kernels in Release and CPU code in Debug")
+  set(OPTIMIZATION_FLAGS "${OPTIMIZATION_FLAGS} -O0 -g")
+else()
+  # Release mode
+  message("Compiling in Release mode")
+  set(OPTIMIZATION_FLAGS "${OPTIMIZATION_FLAGS} -O3")
+endif()
+
+# Check if the USE_NVTOOLS environment variable is set
+if(${USE_NVTOOLS})
+  message(STATUS "USE_NVTOOLS is enabled")
+  add_definitions(-DUSE_NVTOOLS)
+endif()
+
+if(${FAKE_MULTI_GPU})
+  message(STATUS "Fake multi-gpu debugging is enabled")
+  add_definitions(-DDEBUG_FAKE_MULTI_GPU)
+endif()
+
+# in production, should use -arch=sm_70 --ptxas-options=-v to see register spills -lineinfo for better debugging to use
+# nvtx when profiling -lnvToolsExt
 set(CMAKE_CUDA_FLAGS
-    "${CMAKE_CUDA_FLAGS} -ccbin ${CMAKE_CXX_COMPILER} -O3 \
+    "${CMAKE_CUDA_FLAGS} -ccbin ${CMAKE_CXX_COMPILER} ${OPTIMIZATION_FLAGS}\
   -std=c++17 --no-exceptions  --expt-relaxed-constexpr -rdc=true \
-  --use_fast_math -Xcompiler -fPIC")
+  --use_fast_math -Xcompiler -fPIC ")
 
 set(INCLUDE_DIR include)
 

@@ -1,8 +1,9 @@
-use super::ServerKey;
+use crate::shortint::atomic_pattern::AtomicPattern;
 use crate::shortint::ciphertext::Degree;
+use crate::shortint::server_key::GenericServerKey;
 use crate::shortint::Ciphertext;
 
-impl ServerKey {
+impl<AP: AtomicPattern> GenericServerKey<AP> {
     /// Compute homomorphically a bitwise AND between a ciphertext and a clear value
     ///
     ///
@@ -49,7 +50,7 @@ impl ServerKey {
     }
 
     pub fn unchecked_scalar_bitand_assign(&self, lhs: &mut Ciphertext, rhs: u8) {
-        let new_degree = lhs.degree.after_bitand(Degree::new(rhs as usize));
+        let new_degree = lhs.degree.after_bitand(Degree::new(u64::from(rhs)));
         self.evaluate_msg_univariate_function_assign(lhs, |x| x & rhs as u64);
         lhs.degree = new_degree;
     }
@@ -111,7 +112,7 @@ impl ServerKey {
     }
 
     pub fn unchecked_scalar_bitxor_assign(&self, lhs: &mut Ciphertext, rhs: u8) {
-        let new_degree = lhs.degree.after_bitxor(Degree::new(rhs as usize));
+        let new_degree = lhs.degree.after_bitxor(Degree::new(u64::from(rhs)));
         self.evaluate_msg_univariate_function_assign(lhs, |x| x ^ rhs as u64);
         lhs.degree = new_degree;
     }
@@ -172,7 +173,7 @@ impl ServerKey {
     }
 
     pub fn unchecked_scalar_bitor_assign(&self, lhs: &mut Ciphertext, rhs: u8) {
-        let new_degree = lhs.degree.after_bitor(Degree::new(rhs as usize));
+        let new_degree = lhs.degree.after_bitor(Degree::new(u64::from(rhs)));
         self.evaluate_msg_univariate_function_assign(lhs, |x| x | rhs as u64);
         lhs.degree = new_degree;
     }

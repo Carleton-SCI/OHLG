@@ -19,20 +19,18 @@ use crate::core_crypto::commons::numeric::{FloatingPoint, UnsignedInteger};
 use std::ops::Bound;
 
 use crate::core_crypto::prelude::{CastInto, Numeric};
-/// Convenience alias for the most efficient CSPRNG implementation available.
-pub use activated_random_generator::ActivatedRandomGenerator;
 pub use gaussian::*;
 pub use generator::*;
 pub use t_uniform::*;
+pub use tfhe_csprng::generators::DefaultRandomGenerator;
 use tfhe_versionable::Versionize;
 pub use uniform::*;
 pub use uniform_binary::*;
 pub use uniform_ternary::*;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
-mod activated_random_generator;
 mod gaussian;
 mod generator;
 mod t_uniform;
@@ -49,11 +47,19 @@ where
     // pair of elements as custom modulus
     type CustomModulus: Copy;
 
+    /// Generate a value from `distribution`.
     fn generate_one<G: ByteRandomGenerator>(
         generator: &mut RandomGenerator<G>,
         distribution: D,
     ) -> Self;
 
+    /// Generate a value from `distribution` modulo the given `custom_modulus`.
+    ///
+    /// This `custom_modulus` must be able to represent all possible values from `distribution`.
+    ///
+    /// Implementations are allowed to panic if the given `custom_modulus` cannot represent all
+    /// possible values from `distribution` as the effective distribution would differ from the
+    /// desired distribution.
     fn generate_one_custom_modulus<G: ByteRandomGenerator>(
         generator: &mut RandomGenerator<G>,
         distribution: D,
@@ -253,11 +259,24 @@ impl<T: UnsignedInteger> DynamicDistribution<T> {
     #[track_caller]
     pub fn gaussian_variance(&self) -> Variance {
         match self {
-            Self::Gaussian(gaussian) => {
-                Variance(StandardDev::from_standard_dev(gaussian.std).get_variance())
-            }
+            Self::Gaussian(gaussian) => StandardDev::from_standard_dev(gaussian.std).get_variance(),
             Self::TUniform(_) => {
                 panic!("Tried to get gaussian variance from a non gaussian distribution")
+            }
+        }
+    }
+}
+
+impl DynamicDistribution<u32> {
+    pub const fn to_u64_distribution(self) -> DynamicDistribution<u64> {
+        // Depending on how the Scalar type is used, converting it from u32 to u64
+        // might affect the underlying distribution in subtle ways. When adding support for
+        // new distributions, make sure that the result is still correct.
+        match self {
+            Self::Gaussian(gaussian) => DynamicDistribution::Gaussian(gaussian),
+            Self::TUniform(tuniform) => {
+                // Ok because an u32 bound is always also a valid u64 bound
+                DynamicDistribution::new_t_uniform(tuniform.bound_log2())
             }
         }
     }

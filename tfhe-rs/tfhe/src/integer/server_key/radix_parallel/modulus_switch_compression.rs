@@ -45,7 +45,7 @@ impl ServerKey {
     }
     /// Decompresses a signed compressed ciphertext
     /// This operation costs a PBS
-    ///     
+    ///
     /// See [`CompressedModulusSwitchedSignedRadixCiphertext#example`] for usage
     pub fn decompress_signed_parallelized(
         &self,
@@ -113,11 +113,11 @@ impl ServerKey {
     ) -> Vec<Ciphertext> {
         let message_extract = self
             .key
-            .generate_lookup_table(|x| x % self.message_modulus().0 as u64);
+            .generate_lookup_table(|x| x % self.message_modulus().0);
 
         let carry_extract = self
             .key
-            .generate_lookup_table(|x| x / self.message_modulus().0 as u64);
+            .generate_lookup_table(|x| x / self.message_modulus().0);
 
         let mut blocks: Vec<Ciphertext> = compressed_ct
             .paired_blocks

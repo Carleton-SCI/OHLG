@@ -29,11 +29,11 @@ __global__ void device_batch_fft_ggsw_vector(double2 *dest, T *src,
     selected_memory[tid].y = y / (double)std::numeric_limits<T>::max();
     tid += params::degree / params::opt;
   }
-  synchronize_threads_in_block();
+  __syncthreads();
 
   // Switch to the FFT space
   NSMFFT_direct<HalfDegree<params>>(selected_memory);
-  synchronize_threads_in_block();
+  __syncthreads();
 
   // Write the output to global memory
   tid = threadIdx.x;
@@ -49,15 +49,16 @@ __global__ void device_batch_fft_ggsw_vector(double2 *dest, T *src,
  * global memory
  */
 template <typename T, typename ST, class params>
-void batch_fft_ggsw_vector(cudaStream_t *streams, uint32_t *gpu_indexes,
-                           uint32_t gpu_count, double2 *dest, T *src,
+void batch_fft_ggsw_vector(CudaStreams streams, double2 *dest, T *src,
                            int8_t *d_mem, uint32_t r, uint32_t glwe_dim,
                            uint32_t polynomial_size, uint32_t level_count,
                            uint32_t max_shared_memory) {
-  if (gpu_count != 1)
-    PANIC("GPU error (batch_fft_ggsw_vector): multi-GPU execution is not "
-          "supported yet.")
-  cudaSetDevice(gpu_indexes[0]);
+  PANIC_IF_FALSE(streams.count() == 1,
+                 "GPU error (batch_fft_ggsw_vector): multi-GPU execution on %d "
+                 "gpus is not supported yet.",
+                 streams.count());
+
+  cuda_set_device(streams.gpu_index(0));
 
   int shared_memory_size = sizeof(double) * polynomial_size;
 
@@ -66,11 +67,11 @@ void batch_fft_ggsw_vector(cudaStream_t *streams, uint32_t *gpu_indexes,
 
   if (max_shared_memory < shared_memory_size) {
     device_batch_fft_ggsw_vector<T, ST, params, NOSM>
-        <<<gridSize, blockSize, 0, streams[0]>>>(dest, src, d_mem);
+        <<<gridSize, blockSize, 0, streams.stream(0)>>>(dest, src, d_mem);
   } else {
     device_batch_fft_ggsw_vector<T, ST, params, FULLSM>
-        <<<gridSize, blockSize, shared_memory_size, streams[0]>>>(dest, src,
-                                                                  d_mem);
+        <<<gridSize, blockSize, shared_memory_size, streams.stream(0)>>>(
+            dest, src, d_mem);
   }
   check_cuda_error(cudaGetLastError());
 }

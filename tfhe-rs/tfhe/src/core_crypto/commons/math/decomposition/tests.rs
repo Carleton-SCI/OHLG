@@ -200,3 +200,27 @@ fn test_decompose_recompose_non_native_solinas_u64() {
 fn test_decompose_recompose_non_native_edge_mod_round_up_u64() {
     test_decompose_recompose_non_native::<u64>(CiphertextModulus::try_new((1 << 48) + 1).unwrap());
 }
+
+#[test]
+fn test_single_level_decompose_balanced() {
+    let decomposer = SignedDecomposer::new(DecompositionBaseLog(12), DecompositionLevelCount(1));
+
+    assert_eq!(
+        decomposer.level_count().0,
+        1,
+        "This test is only valid if the decomposition level count is 1"
+    );
+    let base_log = decomposer.base_log().0;
+    assert!(base_log < u64::BITS as usize);
+    let bits_for_random_value = base_log + 1;
+    let mut sum = 0i64;
+    for val in 0..(1u64 << bits_for_random_value) {
+        let val = val << (u64::BITS as usize - bits_for_random_value);
+        let decomp = decomposer.decompose(val).next().unwrap();
+        let value: i64 = decomp.value() as i64;
+        sum = sum.checked_add(value).unwrap();
+    }
+
+    // We expect an average value of 0 so the sum is also 0
+    assert_eq!(sum, 0);
+}

@@ -3,28 +3,29 @@ use crate::integer::server_key::radix_parallel::tests_cases_unsigned::{FunctionE
 use crate::integer::server_key::radix_parallel::tests_unsigned::{
     nb_tests_smaller_for_params, overflowing_sum_slice_under_modulus, CpuFunctionExecutor,
 };
-use crate::integer::tests::create_parametrized_test;
+use crate::integer::tests::create_parameterized_test;
 use crate::integer::{IntegerKeyKind, RadixCiphertext, RadixClientKey, ServerKey};
 #[cfg(tarpaulin)]
 use crate::shortint::parameters::coverage_parameters::*;
+use crate::shortint::parameters::test_params::*;
 use crate::shortint::parameters::*;
 use rand::Rng;
 use std::sync::Arc;
 
-create_parametrized_test!(integer_smart_sum_ciphertexts_slice);
-create_parametrized_test!(integer_default_unsigned_overflowing_sum_ciphertexts_vec);
-create_parametrized_test!(integer_default_sum_ciphertexts_vec);
+create_parameterized_test!(integer_smart_sum_ciphertexts_slice);
+create_parameterized_test!(integer_default_unsigned_overflowing_sum_ciphertexts_vec);
+create_parameterized_test!(integer_default_sum_ciphertexts_vec);
 
 fn integer_default_unsigned_overflowing_sum_ciphertexts_vec<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     integer_default_unsigned_overflowing_sum_ciphertexts_test(param);
 }
 
 fn integer_default_sum_ciphertexts_vec<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     // Without this the compiler seems lost, and outputs errors about
     // 'one type is more general than the other' probably because the
@@ -38,7 +39,7 @@ where
 
 pub(crate) fn integer_default_unsigned_overflowing_sum_ciphertexts_test<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let param = param.into();
     let nb_tests_smaller = nb_tests_smaller_for_params(param);
@@ -48,7 +49,7 @@ where
     let mut rng = rand::thread_rng();
 
     // message_modulus^vec_length
-    let modulus = cks.parameters().message_modulus().0.pow(NB_CTXT as u32) as u64;
+    let modulus = cks.parameters().message_modulus().0.pow(NB_CTXT as u32);
 
     for len in [1, 2, 15, 16, 17, 64, 65] {
         for _ in 0..nb_tests_smaller {
@@ -138,16 +139,17 @@ where
 
 pub(crate) fn default_sum_ciphertexts_vec_test<P, T>(param: P, mut executor: T)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
     T: for<'a> FunctionExecutor<&'a Vec<RadixCiphertext>, Option<RadixCiphertext>>,
 {
     let param = param.into();
     let nb_tests_smaller = nb_tests_smaller_for_params(param);
-    let (cks, sks) = KEY_CACHE.get_from_params(param, IntegerKeyKind::Radix);
+    let (cks, mut sks) = KEY_CACHE.get_from_params(param, IntegerKeyKind::Radix);
     let cks = RadixClientKey::from((
         cks,
         crate::integer::server_key::radix_parallel::tests_unsigned::NB_CTXT,
     ));
+    sks.set_deterministic_pbs_execution(true);
     let sks = Arc::new(sks);
 
     let mut rng = rand::thread_rng();
@@ -157,8 +159,7 @@ where
         .parameters()
         .message_modulus()
         .0
-        .pow(crate::integer::server_key::radix_parallel::tests_unsigned::NB_CTXT as u32)
-        as u64;
+        .pow(crate::integer::server_key::radix_parallel::tests_unsigned::NB_CTXT as u32);
 
     executor.setup(&cks, sks);
 
@@ -175,17 +176,20 @@ where
                 .collect::<Vec<_>>();
 
             let ct_res = executor.execute(&ctxts).unwrap();
-            let ct_res: u64 = cks.decrypt(&ct_res);
+            let res: u64 = cks.decrypt(&ct_res);
             let clear = clears.iter().sum::<u64>() % modulus;
 
-            assert_eq!(ct_res, clear);
+            assert_eq!(res, clear);
+
+            let ct_res_2 = executor.execute(&ctxts).unwrap();
+            assert_eq!(ct_res, ct_res_2, "Failed determinism check");
         }
     }
 }
 
 fn integer_smart_sum_ciphertexts_slice<P>(param: P)
 where
-    P: Into<PBSParameters>,
+    P: Into<TestParameters>,
 {
     let param = param.into();
     let nb_tests_smaller = nb_tests_smaller_for_params(param);
@@ -195,7 +199,7 @@ where
     let mut rng = rand::thread_rng();
 
     // message_modulus^vec_length
-    let modulus = cks.parameters().message_modulus().0.pow(NB_CTXT as u32) as u64;
+    let modulus = cks.parameters().message_modulus().0.pow(NB_CTXT as u32);
 
     for len in [1, 2, 15, 16, 17, 64, 65] {
         for _ in 0..nb_tests_smaller {

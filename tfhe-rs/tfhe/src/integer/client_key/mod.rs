@@ -9,20 +9,21 @@ pub(crate) mod secret_encryption_key;
 pub(crate) mod utils;
 
 use super::backward_compatibility::client_key::ClientKeyVersions;
-use super::block_decomposition::{DecomposableInto, RecomposableFrom};
 use super::ciphertext::{
     CompressedRadixCiphertext, CompressedSignedRadixCiphertext, RadixCiphertext,
     SignedRadixCiphertext,
 };
-use crate::core_crypto::prelude::{CastFrom, SignedNumeric, UnsignedNumeric};
-use crate::integer::bigint::static_signed::StaticSignedBigInt;
-use crate::integer::block_decomposition::BlockRecomposer;
+use crate::core_crypto::prelude::{SignedNumeric, UnsignedNumeric};
+use crate::integer::block_decomposition::{
+    BlockRecomposer, DecomposableInto, RecomposableFrom, RecomposableSignedInteger,
+};
 use crate::integer::ciphertext::boolean_value::BooleanBlock;
 use crate::integer::ciphertext::{CompressedCrtCiphertext, CrtCiphertext};
 use crate::integer::client_key::utils::i_crt;
+use crate::integer::compression_keys::{CompressionKey, CompressionPrivateKeys, DecompressionKey};
 use crate::integer::encryption::{encrypt_crt, encrypt_words_radix_impl};
 use crate::shortint::ciphertext::Degree;
-use crate::shortint::parameters::MessageModulus;
+use crate::shortint::parameters::{CompressionParameters, MessageModulus};
 use crate::shortint::{
     Ciphertext, ClientKey as ShortintClientKey, ShortintParameterSet as ShortintParameters,
 };
@@ -31,53 +32,6 @@ pub use radix::RadixClientKey;
 use secret_encryption_key::SecretEncryptionKeyView;
 use serde::{Deserialize, Serialize};
 use tfhe_versionable::Versionize;
-
-pub trait RecomposableSignedInteger:
-    RecomposableFrom<u64>
-    + std::ops::Neg<Output = Self>
-    + std::ops::Shr<u32, Output = Self>
-    + std::ops::BitOrAssign<Self>
-    + std::ops::BitOr<Self, Output = Self>
-    + std::ops::Mul<Self, Output = Self>
-    + CastFrom<Self>
-    + SignedNumeric
-{
-}
-
-impl RecomposableSignedInteger for i8 {}
-impl RecomposableSignedInteger for i16 {}
-impl RecomposableSignedInteger for i32 {}
-impl RecomposableSignedInteger for i64 {}
-impl RecomposableSignedInteger for i128 {}
-
-impl<const N: usize> RecomposableSignedInteger for StaticSignedBigInt<N> {}
-
-/// This function takes a signed integer of type `T` for which `num_bits_set`
-/// have been set.
-///
-/// It will set the most significant bits to the value of the bit
-/// at pos `num_bits_set - 1`.
-///
-/// This is used to correctly decrypt a signed radix ciphertext into a clear type
-/// that has more bits than the original ciphertext.
-///
-/// This is like doing i8 as i16, i16 as i64, i6 as i8, etc
-pub(in crate::integer) fn sign_extend_partial_number<T>(unpadded_value: T, num_bits_set: u32) -> T
-where
-    T: RecomposableSignedInteger,
-{
-    if num_bits_set >= T::BITS as u32 {
-        return unpadded_value;
-    }
-    let sign_bit_pos = num_bits_set - 1;
-    let sign_bit = (unpadded_value >> sign_bit_pos) & T::ONE;
-
-    // Creates a padding mask
-    // where bits above num_bits_set
-    // are 1s if sign bit is `1` else `0`
-    let padding = (T::MAX * sign_bit) << num_bits_set;
-    padding | unpadded_value
-}
 
 /// A structure containing the client key, which must be kept secret.
 ///
@@ -131,12 +85,12 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // Generate the client key, that can encrypt in
     /// // radix and crt decomposition, where each block of the decomposition
     /// // have over 2 bits of message modulus.
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     /// ```
     pub fn new<P>(parameter_set: P) -> Self
     where
@@ -154,12 +108,12 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // Generate the client key, that can encrypt in
     /// // radix and crt decomposition, where each block of the decomposition
     /// // have over 2 bits of message modulus.
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// let key = cks.into_raw_parts();
     /// ```
@@ -173,12 +127,12 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // Generate the client key, that can encrypt in
     /// // radix and crt decomposition, where each block of the decomposition
     /// // have over 2 bits of message modulus.
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// let key = cks.into_raw_parts();
     ///
@@ -188,8 +142,22 @@ impl ClientKey {
         Self { key }
     }
 
-    pub fn parameters(&self) -> crate::shortint::PBSParameters {
-        self.key.parameters.pbs_parameters().unwrap()
+    pub fn parameters(&self) -> crate::shortint::AtomicPatternParameters {
+        self.key.parameters().ap_parameters().unwrap()
+    }
+
+    #[cfg(test)]
+    pub fn create_trivial_radix<T, C>(&self, value: T, num_blocks: usize) -> C
+    where
+        T: DecomposableInto<u64>,
+        C: super::IntegerRadixCiphertext + From<Vec<crate::shortint::Ciphertext>>,
+    {
+        encrypt_words_radix_impl(
+            &self.key,
+            value,
+            num_blocks,
+            crate::shortint::ClientKey::create_trivial,
+        )
     }
 
     /// Encrypts an integer in radix decomposition
@@ -198,9 +166,9 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     /// let num_block = 4;
     ///
     /// let msg = 167_u64;
@@ -224,9 +192,9 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     /// let num_block = 4;
     ///
     /// let msg = 167_u64;
@@ -299,9 +267,9 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     /// let num_block = 4;
     ///
     /// let msg = 191_u64;
@@ -327,9 +295,9 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     /// let num_block = 4;
     ///
     /// let msg = 191_u64;
@@ -365,19 +333,9 @@ impl ClientKey {
             return T::ZERO;
         }
 
-        let bits_in_block = self.key.parameters.message_modulus().0.ilog2();
-        let mut recomposer = BlockRecomposer::<T>::new(bits_in_block);
-
-        for encrypted_block in blocks {
-            let decrypted_block = decrypt_block(&self.key, encrypted_block);
-            if !recomposer.add_unmasked(decrypted_block) {
-                // End of T::BITS reached no need to try more
-                // recomposition
-                break;
-            };
-        }
-
-        recomposer.value()
+        let bits_in_block = self.key.parameters().message_modulus().0.ilog2();
+        let decrypted_block_iter = blocks.iter().map(|block| decrypt_block(&self.key, block));
+        BlockRecomposer::recompose_unsigned(decrypted_block_iter, bits_in_block)
     }
 
     pub fn encrypt_signed_radix<T>(&self, message: T, num_blocks: usize) -> SignedRadixCiphertext
@@ -455,15 +413,16 @@ impl ClientKey {
         let message_modulus = self.parameters().message_modulus().0;
         assert!(message_modulus.is_power_of_two());
 
-        // Decrypting a signed value is the same as decrypting an unsigned value
-        // but, in the signed case,
-        // we have to take care of the case when the clear type T has more bits
-        // than what the ciphertext encrypts.
-        let unpadded_value = self.decrypt_radix_impl(&ctxt.blocks, decrypt_block);
+        if ctxt.blocks.is_empty() {
+            return T::ZERO;
+        }
 
-        let num_bits_in_message = message_modulus.ilog2();
-        let num_bits_in_ctxt = num_bits_in_message * ctxt.blocks.len() as u32;
-        sign_extend_partial_number(unpadded_value, num_bits_in_ctxt)
+        let bits_in_block = self.key.parameters().message_modulus().0.ilog2();
+        let decrypted_block_iter = ctxt
+            .blocks
+            .iter()
+            .map(|block| decrypt_block(&self.key, block));
+        BlockRecomposer::recompose_signed(decrypted_block_iter, bits_in_block)
     }
 
     /// Encrypts one block.
@@ -474,10 +433,9 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
-    /// let num_block = 4;
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// let msg = 2_u64;
     ///
@@ -495,12 +453,12 @@ impl ClientKey {
     /// # Example
     ///
     /// ```rust
-    /// use tfhe::integer::{gen_keys_radix, BooleanBlock};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::integer::gen_keys_radix;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, size);
     ///
     /// let a = cks.encrypt_bool(false);
     /// let dec = cks.decrypt_bool(&a);
@@ -531,9 +489,9 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::{BooleanBlock, ClientKey};
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// let a = cks.encrypt_one_block(1u64);
     /// let wrapped = BooleanBlock::new_unchecked(a);
@@ -550,9 +508,9 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// let msg = 13_u64;
     ///
@@ -590,16 +548,16 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // Generate the client key and the server key:
-    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128);
     ///
     /// let msg = 27_u64;
     /// let basis: Vec<u64> = vec![2, 3, 5];
     ///
     /// // Encryption:
-    /// let mut ct = cks.encrypt_crt(msg, basis);
+    /// let ct = cks.encrypt_crt(msg, basis);
     ///
     /// // Decryption:
     /// let dec = cks.decrypt_crt(&ct);
@@ -628,9 +586,9 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_3_CARRY_3_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_3_CARRY_3_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M128);
     ///
     /// let msg = 13_u64;
     ///
@@ -669,14 +627,14 @@ impl ClientKey {
     ///
     /// ```rust
     /// use tfhe::integer::ClientKey;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_3_CARRY_3_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M128;
     ///
-    /// let cks = ClientKey::new(PARAM_MESSAGE_3_CARRY_3_KS_PBS);
+    /// let cks = ClientKey::new(PARAM_MESSAGE_3_CARRY_3_KS_PBS_GAUSSIAN_2M128);
     ///
     /// let msg = 27_u64;
     /// let basis: Vec<u64> = vec![2, 3, 5];
     /// // Encryption of one message:
-    /// let mut ct = cks.encrypt_native_crt(msg, basis);
+    /// let ct = cks.encrypt_native_crt(msg, basis);
     ///
     /// // Decryption:
     /// let dec = cks.decrypt_native_crt(&ct);
@@ -690,7 +648,7 @@ impl ClientKey {
             //decrypt the component i of the integer and multiply it by the radix product
             val.push(
                 self.key
-                    .decrypt_message_native_crt(c_i, MessageModulus(*b_i as usize)),
+                    .decrypt_message_native_crt(c_i, MessageModulus(*b_i)),
             );
         }
 
@@ -713,5 +671,28 @@ impl ClientKey {
         CrtCiphertextType: From<(Vec<Block>, Vec<u64>)>,
     {
         encrypt_crt(&self.key, message, base_vec, encrypt_block)
+    }
+
+    pub fn new_compression_private_key(
+        &self,
+        params: CompressionParameters,
+    ) -> CompressionPrivateKeys {
+        CompressionPrivateKeys {
+            key: self.key.new_compression_private_key(params),
+        }
+    }
+
+    pub fn new_compression_decompression_keys(
+        &self,
+        private_compression_key: &CompressionPrivateKeys,
+    ) -> (CompressionKey, DecompressionKey) {
+        let (comp_key, decomp_key) = self
+            .key
+            .new_compression_decompression_keys(&private_compression_key.key);
+
+        (
+            CompressionKey { key: comp_key },
+            DecompressionKey { key: decomp_key },
+        )
     }
 }

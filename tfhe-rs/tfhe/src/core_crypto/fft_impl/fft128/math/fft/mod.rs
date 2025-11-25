@@ -1,13 +1,13 @@
 use crate::core_crypto::commons::math::torus::UnsignedTorus;
 use crate::core_crypto::commons::numeric::{CastFrom, CastInto, UnsignedInteger};
 use crate::core_crypto::commons::parameters::PolynomialSize;
-use crate::core_crypto::commons::utils::izip;
-use concrete_fft::fft128::{f128, Plan};
+use crate::core_crypto::commons::utils::izip_eq;
 use core::any::TypeId;
 use dyn_stack::{PodStack, SizeOverflow, StackReq};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
+use tfhe_fft::fft128::{f128, Plan};
 
 #[derive(Clone)]
 pub(crate) struct PlanWrapper(Plan);
@@ -69,17 +69,23 @@ impl Fft128 {
             })
         };
 
-        // could not find a plan of the given size, we lock the map again and try to insert it
-        let mut plans = global_plans.write().unwrap();
-        if let Entry::Vacant(v) = plans.entry(n) {
-            v.insert(Arc::new(OnceLock::new()));
-        }
+        get_plan().map_or_else(
+            || {
+                // If we don't find a plan for the given size, we insert a new OnceLock,
+                // drop the write lock on the map and then let get_plan() initialize the OnceLock
+                // (without holding the write lock on the map).
+                let mut plans = global_plans.write().unwrap();
+                if let Entry::Vacant(v) = plans.entry(n) {
+                    v.insert(Arc::new(OnceLock::new()));
+                }
+                drop(plans);
 
-        drop(plans);
-
-        Self {
-            plan: get_plan().unwrap(),
-        }
+                Self {
+                    plan: get_plan().unwrap(),
+                }
+            },
+            |plan| Self { plan },
+        )
     }
 }
 
@@ -166,7 +172,7 @@ pub fn f64_to_u128(f: f64) -> u128 {
         0
     } else {
         // >= 1, < max
-        let m = 1 << 127 | (f as u128) << 75; // Mantissa and the implicit 1-bit.
+        let m = (1 << 127) | ((f as u128) << 75); // Mantissa and the implicit 1-bit.
         let s = 1150 - (f >> 52); // Shift based on the exponent and bias.
         if s >= 128 {
             0
@@ -180,13 +186,13 @@ pub fn f64_to_u128(f: f64) -> u128 {
 pub fn f64_to_i128(f: f64) -> i128 {
     let f = f.to_bits();
 
-    let a = f & !0 >> 1; // Remove sign bit.
+    let a = f & (!0 >> 1); // Remove sign bit.
     if a < 1023 << 52 {
         // >= 0, < 1
         0
     } else {
         // >= 1, < max
-        let m = 1 << 127 | (a as u128) << 75; // Mantissa and the implicit 1-bit.
+        let m = (1 << 127) | ((a as u128) << 75); // Mantissa and the implicit 1-bit.
         let s = 1150 - (a >> 52); // Shift based on the exponent and bias.
         let u = (m >> s) as i128; // Unsigned result.
         if (f as i64) < 0 {
@@ -271,7 +277,7 @@ pub fn convert_forward_torus<Scalar: UnsignedTorus>(
     let normalization = 2.0_f64.powi(-(Scalar::BITS as i32));
 
     for (out_re0, out_re1, out_im0, out_im1, &in_re, &in_im) in
-        izip!(out_re0, out_re1, out_im0, out_im1, in_re, in_im)
+        izip_eq!(out_re0, out_re1, out_im0, out_im1, in_re, in_im)
     {
         let out_re = to_signed_to_f128(in_re);
         let out_im = to_signed_to_f128(in_im);
@@ -295,7 +301,7 @@ pub fn convert_forward_integer<Scalar: UnsignedTorus>(
     in_im: &[Scalar],
 ) {
     for (out_re0, out_re1, out_im0, out_im1, &in_re, &in_im) in
-        izip!(out_re0, out_re1, out_im0, out_im1, in_re, in_im)
+        izip_eq!(out_re0, out_re1, out_im0, out_im1, in_re, in_im)
     {
         let out_re = to_signed_to_f128(in_re);
         let out_im = to_signed_to_f128(in_im);
@@ -317,7 +323,7 @@ fn convert_add_backward_torus<Scalar: UnsignedTorus>(
 ) {
     let norm = 1.0 / in_re0.len() as f64;
     for (out_re, out_im, in_re0, in_re1, in_im0, in_im1) in
-        izip!(out_re, out_im, in_re0, in_re1, in_im0, in_im1)
+        izip_eq!(out_re, out_im, in_re0, in_re1, in_im0, in_im1)
     {
         let in_re = f128(*in_re0 * norm, *in_re1 * norm);
         let in_im = f128(*in_im0 * norm, *in_im1 * norm);
@@ -337,7 +343,7 @@ fn convert_backward_torus<Scalar: UnsignedTorus>(
 ) {
     let norm = 1.0 / in_re0.len() as f64;
     for (out_re, out_im, in_re0, in_re1, in_im0, in_im1) in
-        izip!(out_re, out_im, in_re0, in_re1, in_im0, in_im1)
+        izip_eq!(out_re, out_im, in_re0, in_re1, in_im0, in_im1)
     {
         let in_re = f128(*in_re0 * norm, *in_re1 * norm);
         let in_im = f128(*in_im0 * norm, *in_im1 * norm);
@@ -346,7 +352,7 @@ fn convert_backward_torus<Scalar: UnsignedTorus>(
     }
 }
 
-impl<'a> Fft128View<'a> {
+impl Fft128View<'_> {
     pub fn polynomial_size(self) -> PolynomialSize {
         PolynomialSize(2 * self.plan.fft_size())
     }
@@ -437,7 +443,7 @@ impl<'a> Fft128View<'a> {
         fourier_re1: &[f64],
         fourier_im0: &[f64],
         fourier_im1: &[f64],
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
         self.backward_with_conv(
             standard,
@@ -463,7 +469,7 @@ impl<'a> Fft128View<'a> {
         fourier_re1: &[f64],
         fourier_im0: &[f64],
         fourier_im1: &[f64],
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
         self.backward_with_conv(
             standard,
@@ -487,7 +493,7 @@ impl<'a> Fft128View<'a> {
         fourier_im0: &[f64],
         fourier_im1: &[f64],
         conv_fn: F,
-        stack: PodStack<'_>,
+        stack: &mut PodStack,
     ) {
         let n = standard.len();
         debug_assert_eq!(n, 2 * fourier_re0.len());
@@ -495,27 +501,19 @@ impl<'a> Fft128View<'a> {
         debug_assert_eq!(n, 2 * fourier_im0.len());
         debug_assert_eq!(n, 2 * fourier_im1.len());
 
-        let (mut tmp_re0, stack) =
+        let (tmp_re0, stack) =
             stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, fourier_re0.iter().copied());
-        let (mut tmp_re1, stack) =
+        let (tmp_re1, stack) =
             stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, fourier_re1.iter().copied());
-        let (mut tmp_im0, stack) =
+        let (tmp_im0, stack) =
             stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, fourier_im0.iter().copied());
-        let (mut tmp_im1, _) =
+        let (tmp_im1, _) =
             stack.collect_aligned(aligned_vec::CACHELINE_ALIGN, fourier_im1.iter().copied());
 
-        self.plan
-            .inv(&mut tmp_re0, &mut tmp_re1, &mut tmp_im0, &mut tmp_im1);
+        self.plan.inv(tmp_re0, tmp_re1, tmp_im0, tmp_im1);
 
         let (standard_re, standard_im) = standard.split_at_mut(n / 2);
-        conv_fn(
-            standard_re,
-            standard_im,
-            &tmp_re0,
-            &tmp_re1,
-            &tmp_im0,
-            &tmp_im1,
-        );
+        conv_fn(standard_re, standard_im, tmp_re0, tmp_re1, tmp_im0, tmp_im1);
     }
 }
 

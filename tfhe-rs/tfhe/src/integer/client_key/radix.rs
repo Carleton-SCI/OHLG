@@ -1,14 +1,19 @@
 //! Definition of the client key for radix decomposition
 
-use super::{ClientKey, RecomposableSignedInteger, SecretEncryptionKeyView};
+use super::{ClientKey, SecretEncryptionKeyView};
 use crate::core_crypto::prelude::{SignedNumeric, UnsignedNumeric};
 use crate::integer::backward_compatibility::client_key::RadixClientKeyVersions;
-use crate::integer::block_decomposition::{DecomposableInto, RecomposableFrom};
+use crate::integer::block_decomposition::{
+    DecomposableInto, RecomposableFrom, RecomposableSignedInteger,
+};
 use crate::integer::ciphertext::{RadixCiphertext, SignedRadixCiphertext};
+use crate::integer::compression_keys::{
+    CompressedCompressionKey, CompressedDecompressionKey, CompressionPrivateKeys,
+};
 use crate::integer::BooleanBlock;
-use crate::shortint::list_compression::{CompressionKey, CompressionPrivateKeys, DecompressionKey};
-use crate::shortint::parameters::list_compression::CompressionParameters;
-use crate::shortint::{Ciphertext as ShortintCiphertext, PBSParameters as ShortintParameters};
+use crate::shortint::{
+    AtomicPatternParameters as ShortintParameters, Ciphertext as ShortintCiphertext,
+};
 use serde::{Deserialize, Serialize};
 use tfhe_versionable::Versionize;
 
@@ -21,11 +26,11 @@ use tfhe_versionable::Versionize;
 ///
 /// ```rust
 /// use tfhe::integer::RadixClientKey;
-/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
 ///
 /// // 2 * 4 = 8 bits of message
 /// let num_block = 4;
-/// let cks = RadixClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_block);
+/// let cks = RadixClientKey::new(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_block);
 ///
 /// let msg = 167_u64;
 ///
@@ -134,20 +139,19 @@ impl RadixClientKey {
         self.num_blocks
     }
 
-    pub fn new_compression_private_key(
-        &self,
-        params: CompressionParameters,
-    ) -> CompressionPrivateKeys {
-        self.key.key.new_compression_private_key(params)
-    }
-
-    pub fn new_compression_decompression_keys(
+    pub fn new_compressed_compression_decompression_keys(
         &self,
         private_compression_key: &CompressionPrivateKeys,
-    ) -> (CompressionKey, DecompressionKey) {
-        self.key
+    ) -> (CompressedCompressionKey, CompressedDecompressionKey) {
+        let (comp_key, decomp_key) = self
             .key
-            .new_compression_decompression_keys(private_compression_key)
+            .key
+            .new_compressed_compression_decompression_keys(&private_compression_key.key);
+
+        (
+            CompressedCompressionKey { key: comp_key },
+            CompressedDecompressionKey { key: decomp_key },
+        )
     }
 }
 

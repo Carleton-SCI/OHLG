@@ -1,13 +1,18 @@
 use crate::core_crypto::gpu::vec::CudaVec;
 use crate::core_crypto::gpu::CudaStreams;
-use crate::core_crypto::prelude::SignedNumeric;
+use crate::core_crypto::prelude::{LweBskGroupingFactor, SignedNumeric};
 use crate::integer::block_decomposition::{BlockDecomposer, DecomposableInto};
 use crate::integer::gpu::ciphertext::boolean_value::CudaBooleanBlock;
 use crate::integer::gpu::ciphertext::{
     CudaIntegerRadixCiphertext, CudaSignedRadixCiphertext, CudaUnsignedRadixCiphertext,
 };
-use crate::integer::gpu::scalar_addition_integer_radix_assign_async;
-use crate::integer::gpu::server_key::CudaServerKey;
+use crate::integer::gpu::server_key::{CudaBootstrappingKey, CudaServerKey};
+use crate::integer::gpu::{
+    cuda_backend_get_full_propagate_assign_size_on_gpu,
+    cuda_backend_get_propagate_single_carry_assign_size_on_gpu,
+    cuda_backend_scalar_addition_assign, PBSType,
+};
+use crate::integer::server_key::radix_parallel::OutputFlag;
 use crate::prelude::CastInto;
 use crate::shortint::ciphertext::NoiseLevel;
 
@@ -23,26 +28,27 @@ impl CudaServerKey {
     ///
     /// ```rust
     /// use tfhe::core_crypto::gpu::CudaStreams;
+    /// use tfhe::core_crypto::gpu::vec::GpuIndex;
     /// use tfhe::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext;
     /// use tfhe::integer::gpu::gen_keys_radix_gpu;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
     ///
     /// let gpu_index = 0;
-    /// let mut streams = CudaStreams::new_single_gpu(gpu_index);
+    /// let streams = CudaStreams::new_single_gpu(GpuIndex::new(gpu_index));
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix_gpu(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size, &mut streams);
+    /// let (cks, sks) = gen_keys_radix_gpu(PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128, size, &streams);
     ///
     /// let msg = 4;
     /// let scalar = 40;
     ///
     /// let ct = cks.encrypt(msg);
-    /// let mut d_ct = CudaUnsignedRadixCiphertext::from_radix_ciphertext(&ct, &mut streams);
+    /// let d_ct = CudaUnsignedRadixCiphertext::from_radix_ciphertext(&ct, &streams);
     ///
     /// // Compute homomorphically an addition:
-    /// let d_ct_res = sks.unchecked_scalar_add(&d_ct, scalar, &mut streams);
-    /// let ct_res = d_ct_res.to_radix_ciphertext(&mut streams);
+    /// let d_ct_res = sks.unchecked_scalar_add(&d_ct, scalar, &streams);
+    /// let ct_res = d_ct_res.to_radix_ciphertext(&streams);
     ///
     /// // Decrypt:
     /// let dec: u64 = cks.decrypt(&ct_res);
@@ -58,53 +64,9 @@ impl CudaServerKey {
         Scalar: DecomposableInto<u8> + CastInto<u64>,
         T: CudaIntegerRadixCiphertext,
     {
-        let mut result = unsafe { ct.duplicate_async(streams) };
+        let mut result = ct.duplicate(streams);
         self.unchecked_scalar_add_assign(&mut result, scalar, streams);
         result
-    }
-
-    /// # Safety
-    ///
-    /// - `streams` __must__ be synchronized to guarantee computation has finished, and inputs must
-    ///   not be dropped until streams is synchronised
-    pub unsafe fn unchecked_scalar_add_assign_async<Scalar, T>(
-        &self,
-        ct: &mut T,
-        scalar: Scalar,
-        streams: &CudaStreams,
-    ) where
-        Scalar: DecomposableInto<u8> + CastInto<u64>,
-        T: CudaIntegerRadixCiphertext,
-    {
-        if scalar != Scalar::ZERO {
-            let bits_in_message = self.message_modulus.0.ilog2();
-            let mut d_decomposed_scalar = CudaVec::<u64>::new_async(
-                ct.as_ref().d_blocks.lwe_ciphertext_count().0,
-                streams,
-                0,
-            );
-            let decomposed_scalar =
-                BlockDecomposer::with_early_stop_at_zero(scalar, bits_in_message)
-                    .iter_as::<u64>()
-                    .take(d_decomposed_scalar.len())
-                    .collect::<Vec<_>>();
-            d_decomposed_scalar.copy_from_cpu_async(decomposed_scalar.as_slice(), streams, 0);
-
-            let lwe_dimension = ct.as_ref().d_blocks.lwe_dimension();
-            // If the scalar is decomposed using less than the number of blocks our ciphertext
-            // has, we just don't touch ciphertext's last blocks
-            scalar_addition_integer_radix_assign_async(
-                streams,
-                &mut ct.as_mut().d_blocks.0.d_vec,
-                &d_decomposed_scalar,
-                lwe_dimension,
-                decomposed_scalar.len() as u32,
-                self.message_modulus.0 as u32,
-                self.carry_modulus.0 as u32,
-            );
-
-            ct.as_mut().info = ct.as_ref().info.after_scalar_add(scalar);
-        }
     }
 
     pub fn unchecked_scalar_add_assign<Scalar, T>(
@@ -116,10 +78,33 @@ impl CudaServerKey {
         Scalar: DecomposableInto<u8> + CastInto<u64>,
         T: CudaIntegerRadixCiphertext,
     {
-        unsafe {
-            self.unchecked_scalar_add_assign_async(ct, scalar, streams);
+        if scalar != Scalar::ZERO {
+            let bits_in_message = self.message_modulus.0.ilog2();
+            let mut d_decomposed_scalar = unsafe {
+                CudaVec::<u64>::new_async(ct.as_ref().d_blocks.lwe_ciphertext_count().0, streams, 0)
+            };
+            let decomposed_scalar =
+                BlockDecomposer::with_early_stop_at_zero(scalar, bits_in_message)
+                    .iter_as::<u64>()
+                    .take(d_decomposed_scalar.len())
+                    .collect::<Vec<_>>();
+            unsafe {
+                d_decomposed_scalar.copy_from_cpu_async(decomposed_scalar.as_slice(), streams, 0);
+            }
+            // If the scalar is decomposed using less than the number of blocks our ciphertext
+            // has, we just don't touch ciphertext's last blocks
+            unsafe {
+                cuda_backend_scalar_addition_assign(
+                    streams,
+                    ct.as_mut(),
+                    &d_decomposed_scalar,
+                    &decomposed_scalar,
+                    decomposed_scalar.len() as u32,
+                    self.message_modulus.0 as u32,
+                    self.carry_modulus.0 as u32,
+                );
+            }
         }
-        streams.synchronize();
     }
 
     /// Computes homomorphically an addition between a scalar and a ciphertext.
@@ -133,26 +118,27 @@ impl CudaServerKey {
     ///
     /// ```rust
     /// use tfhe::core_crypto::gpu::CudaStreams;
+    /// use tfhe::core_crypto::gpu::vec::GpuIndex;
     /// use tfhe::integer::gpu::ciphertext::CudaUnsignedRadixCiphertext;
     /// use tfhe::integer::gpu::gen_keys_radix_gpu;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
     ///
     /// let gpu_index = 0;
-    /// let mut streams = CudaStreams::new_single_gpu(gpu_index);
+    /// let streams = CudaStreams::new_single_gpu(GpuIndex::new(gpu_index));
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let size = 4;
-    /// let (cks, sks) = gen_keys_radix_gpu(PARAM_MESSAGE_2_CARRY_2_KS_PBS, size, &mut streams);
+    /// let (cks, sks) = gen_keys_radix_gpu(PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128, size, &streams);
     ///
     /// let msg = 4;
     /// let scalar = 40;
     ///
     /// let ct = cks.encrypt(msg);
-    /// let mut d_ct = CudaUnsignedRadixCiphertext::from_radix_ciphertext(&ct, &mut streams);
+    /// let d_ct = CudaUnsignedRadixCiphertext::from_radix_ciphertext(&ct, &streams);
     ///
     /// // Compute homomorphically an addition:
-    /// let d_ct_res = sks.scalar_add(&d_ct, scalar, &mut streams);
-    /// let ct_res = d_ct_res.to_radix_ciphertext(&mut streams);
+    /// let d_ct_res = sks.scalar_add(&d_ct, scalar, &streams);
+    /// let ct_res = d_ct_res.to_radix_ciphertext(&streams);
     ///
     /// // Decrypt:
     /// let dec: u64 = cks.decrypt(&ct_res);
@@ -163,30 +149,17 @@ impl CudaServerKey {
         Scalar: DecomposableInto<u8> + CastInto<u64>,
         T: CudaIntegerRadixCiphertext,
     {
-        let mut result = unsafe { ct.duplicate_async(streams) };
+        let mut result = ct.duplicate(streams);
         self.scalar_add_assign(&mut result, scalar, streams);
         result
     }
 
-    /// # Safety
-    ///
-    /// - `streams` __must__ be synchronized to guarantee computation has finished, and inputs must
-    ///   not be dropped until streams is synchronised
-    pub unsafe fn scalar_add_assign_async<Scalar, T>(
+    pub fn get_scalar_add_size_on_gpu<T: CudaIntegerRadixCiphertext>(
         &self,
-        ct: &mut T,
-        scalar: Scalar,
+        ct: &T,
         streams: &CudaStreams,
-    ) where
-        Scalar: DecomposableInto<u8> + CastInto<u64>,
-        T: CudaIntegerRadixCiphertext,
-    {
-        if !ct.block_carries_are_empty() {
-            self.full_propagate_assign_async(ct, streams);
-        };
-
-        self.unchecked_scalar_add_assign_async(ct, scalar, streams);
-        let _carry = self.propagate_single_carry_assign_async(ct, streams);
+    ) -> u64 {
+        self.get_scalar_add_assign_size_on_gpu(ct, streams)
     }
 
     pub fn scalar_add_assign<Scalar, T>(&self, ct: &mut T, scalar: Scalar, streams: &CudaStreams)
@@ -194,10 +167,101 @@ impl CudaServerKey {
         Scalar: DecomposableInto<u8> + CastInto<u64>,
         T: CudaIntegerRadixCiphertext,
     {
-        unsafe {
-            self.scalar_add_assign_async(ct, scalar, streams);
+        if !ct.block_carries_are_empty() {
+            self.full_propagate_assign(ct, streams);
         }
-        streams.synchronize();
+
+        self.unchecked_scalar_add_assign(ct, scalar, streams);
+        let _carry = self.propagate_single_carry_assign(ct, streams, None, OutputFlag::None);
+    }
+
+    pub fn get_scalar_add_assign_size_on_gpu<T>(&self, ct: &T, streams: &CudaStreams) -> u64
+    where
+        T: CudaIntegerRadixCiphertext,
+    {
+        let full_prop_mem = if ct.block_carries_are_empty() {
+            0
+        } else {
+            match &self.bootstrapping_key {
+                CudaBootstrappingKey::Classic(d_bsk) => {
+                    cuda_backend_get_full_propagate_assign_size_on_gpu(
+                        streams,
+                        d_bsk.input_lwe_dimension(),
+                        d_bsk.glwe_dimension(),
+                        d_bsk.polynomial_size(),
+                        self.key_switching_key.decomposition_level_count(),
+                        self.key_switching_key.decomposition_base_log(),
+                        d_bsk.decomp_level_count(),
+                        d_bsk.decomp_base_log(),
+                        self.message_modulus,
+                        self.carry_modulus,
+                        PBSType::Classical,
+                        LweBskGroupingFactor(0),
+                        d_bsk.ms_noise_reduction_configuration.as_ref(),
+                    )
+                }
+                CudaBootstrappingKey::MultiBit(d_multibit_bsk) => {
+                    cuda_backend_get_full_propagate_assign_size_on_gpu(
+                        streams,
+                        d_multibit_bsk.input_lwe_dimension(),
+                        d_multibit_bsk.glwe_dimension(),
+                        d_multibit_bsk.polynomial_size(),
+                        self.key_switching_key.decomposition_level_count(),
+                        self.key_switching_key.decomposition_base_log(),
+                        d_multibit_bsk.decomp_level_count(),
+                        d_multibit_bsk.decomp_base_log(),
+                        self.message_modulus,
+                        self.carry_modulus,
+                        PBSType::MultiBit,
+                        d_multibit_bsk.grouping_factor,
+                        None,
+                    )
+                }
+            }
+        };
+
+        let num_blocks = ct.as_ref().d_blocks.lwe_ciphertext_count().0 as u32;
+        let single_carry_mem = match &self.bootstrapping_key {
+            CudaBootstrappingKey::Classic(d_bsk) => {
+                cuda_backend_get_propagate_single_carry_assign_size_on_gpu(
+                    streams,
+                    d_bsk.input_lwe_dimension(),
+                    d_bsk.glwe_dimension(),
+                    d_bsk.polynomial_size(),
+                    self.key_switching_key.decomposition_level_count(),
+                    self.key_switching_key.decomposition_base_log(),
+                    d_bsk.decomp_level_count(),
+                    d_bsk.decomp_base_log(),
+                    num_blocks,
+                    self.message_modulus,
+                    self.carry_modulus,
+                    PBSType::Classical,
+                    LweBskGroupingFactor(0),
+                    OutputFlag::None,
+                    d_bsk.ms_noise_reduction_configuration.as_ref(),
+                )
+            }
+            CudaBootstrappingKey::MultiBit(d_multibit_bsk) => {
+                cuda_backend_get_propagate_single_carry_assign_size_on_gpu(
+                    streams,
+                    d_multibit_bsk.input_lwe_dimension(),
+                    d_multibit_bsk.glwe_dimension(),
+                    d_multibit_bsk.polynomial_size(),
+                    self.key_switching_key.decomposition_level_count(),
+                    self.key_switching_key.decomposition_base_log(),
+                    d_multibit_bsk.decomp_level_count(),
+                    d_multibit_bsk.decomp_base_log(),
+                    num_blocks,
+                    self.message_modulus,
+                    self.carry_modulus,
+                    PBSType::MultiBit,
+                    d_multibit_bsk.grouping_factor,
+                    OutputFlag::None,
+                    None,
+                )
+            }
+        };
+        full_prop_mem.max(single_carry_mem)
     }
 
     pub fn unsigned_overflowing_scalar_add<Scalar>(
@@ -210,9 +274,7 @@ impl CudaServerKey {
         Scalar: DecomposableInto<u8> + CastInto<u64>,
     {
         let mut result;
-        unsafe {
-            result = ct_left.duplicate_async(stream);
-        }
+        result = ct_left.duplicate(stream);
         let overflowed = self.unsigned_overflowing_scalar_add_assign(&mut result, scalar, stream);
         (result, overflowed)
     }
@@ -226,10 +288,8 @@ impl CudaServerKey {
     where
         Scalar: DecomposableInto<u8> + CastInto<u64>,
     {
-        unsafe {
-            if !ct_left.block_carries_are_empty() {
-                self.full_propagate_assign_async(ct_left, stream);
-            }
+        if !ct_left.block_carries_are_empty() {
+            self.full_propagate_assign(ct_left, stream);
         }
         self.unchecked_unsigned_overflowing_scalar_add_assign(ct_left, scalar, stream)
     }
@@ -244,9 +304,7 @@ impl CudaServerKey {
         Scalar: DecomposableInto<u8> + CastInto<u64>,
     {
         let mut result;
-        unsafe {
-            result = ct_left.duplicate_async(stream);
-        }
+        result = ct_left.duplicate(stream);
         let overflowed =
             self.unchecked_unsigned_overflowing_scalar_add_assign(&mut result, scalar, stream);
         (result, overflowed)
@@ -263,9 +321,7 @@ impl CudaServerKey {
     {
         self.unchecked_scalar_add_assign(ct_left, scalar, stream);
         let mut carry_out;
-        unsafe {
-            carry_out = self.propagate_single_carry_assign_async(ct_left, stream);
-        }
+        carry_out = self.propagate_single_carry_assign(ct_left, stream, None, OutputFlag::Carry);
 
         let num_scalar_blocks =
             BlockDecomposer::with_early_stop_at_zero(scalar, self.message_modulus.0.ilog2())
@@ -285,16 +341,17 @@ impl CudaServerKey {
 
     /// ```rust
     /// use tfhe::core_crypto::gpu::CudaStreams;
-    /// use tfhe::integer::gpu::ciphertext::{CudaSignedRadixCiphertext, CudaUnsignedRadixCiphertext};
+    /// use tfhe::core_crypto::gpu::vec::GpuIndex;
+    /// use tfhe::integer::gpu::ciphertext::CudaSignedRadixCiphertext;
     /// use tfhe::integer::gpu::gen_keys_radix_gpu;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
     ///
     /// let gpu_index = 0;
-    /// let streams = CudaStreams::new_single_gpu(gpu_index);
+    /// let streams = CudaStreams::new_single_gpu(GpuIndex::new(gpu_index));
     ///
     /// // Generate the client key and the server key:
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix_gpu(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks, &streams);
+    /// let (cks, sks) = gen_keys_radix_gpu(PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128, num_blocks, &streams);
     ///
     /// let msg: i8 = 120;
     /// let scalar: i8 = 8;
@@ -327,11 +384,9 @@ impl CudaServerKey {
         Scalar: SignedNumeric + DecomposableInto<u64> + CastInto<u64>,
     {
         let mut tmp_lhs;
-        unsafe {
-            tmp_lhs = ct_left.duplicate_async(streams);
-            if !tmp_lhs.block_carries_are_empty() {
-                self.full_propagate_assign_async(&mut tmp_lhs, streams);
-            }
+        tmp_lhs = ct_left.duplicate(streams);
+        if !tmp_lhs.block_carries_are_empty() {
+            self.full_propagate_assign(&mut tmp_lhs, streams);
         }
 
         let trivial: CudaSignedRadixCiphertext = self.create_trivial_radix(
@@ -347,7 +402,7 @@ impl CudaServerKey {
                 .skip(ct_left.ciphertext.d_blocks.lwe_ciphertext_count().0);
 
         let extra_blocks_have_correct_value = if scalar < Scalar::ZERO {
-            extra_scalar_block_iter.all(|block| block == (self.message_modulus.0 as u64 - 1))
+            extra_scalar_block_iter.all(|block| block == (self.message_modulus.0 - 1))
         } else {
             extra_scalar_block_iter.all(|block| block == 0)
         };

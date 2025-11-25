@@ -4,8 +4,10 @@ use crate::core_crypto::algorithms::*;
 use crate::core_crypto::commons::parameters::*;
 use crate::core_crypto::entities::*;
 use crate::shortint::ciphertext::{Degree, NoiseLevel};
-use crate::shortint::parameters::{CarryModulus, MessageModulus};
-use crate::shortint::{Ciphertext, ClientKey, CompressedPublicKey, PublicKey};
+use crate::shortint::parameters::{AtomicPatternKind, CarryModulus, MessageModulus};
+use crate::shortint::{
+    Ciphertext, ClientKey, CompressedPublicKey, PaddingBit, PublicKey, ShortintEncoding,
+};
 
 // We have q = 2^64 so log2q = 64
 const LOG2_Q_64: usize = 64;
@@ -33,7 +35,7 @@ impl ShortintEngine {
             &secret_encryption_key,
             zero_encryption_count,
             encryption_noise_distribution,
-            client_key.parameters.ciphertext_modulus(),
+            client_key.parameters().ciphertext_modulus(),
             &mut self.encryption_generator,
         );
 
@@ -42,13 +44,15 @@ impl ShortintEngine {
             &secret_encryption_key,
             zero_encryption_count,
             encryption_noise_distribution,
-            client_key.parameters.ciphertext_modulus(),
+            client_key.parameters().ciphertext_modulus(),
             &mut self.encryption_generator,
         );
         PublicKey {
             lwe_public_key,
-            parameters: client_key.parameters,
-            pbs_order: client_key.parameters.encryption_key_choice().into(),
+            parameters: client_key.parameters(),
+            atomic_pattern: AtomicPatternKind::Standard(
+                client_key.parameters().encryption_key_choice().into(),
+            ),
         }
     }
 
@@ -56,7 +60,7 @@ impl ShortintEngine {
         &mut self,
         client_key: &ClientKey,
     ) -> CompressedPublicKey {
-        let client_parameters = client_key.parameters;
+        let client_parameters = client_key.parameters();
 
         let (secret_encryption_key, encryption_noise_distribution) =
             client_key.encryption_key_and_noise();
@@ -85,8 +89,10 @@ impl ShortintEngine {
 
         CompressedPublicKey {
             lwe_public_key: compressed_public_key,
-            parameters: client_key.parameters,
-            pbs_order: client_key.parameters.encryption_key_choice().into(),
+            parameters: client_key.parameters(),
+            atomic_pattern: AtomicPatternKind::Standard(
+                client_key.parameters().encryption_key_choice().into(),
+            ),
         }
     }
 
@@ -132,23 +138,16 @@ impl ShortintEngine {
         message: u64,
         message_modulus: MessageModulus,
     ) -> Ciphertext {
-        //This ensures that the space message_modulus*carry_modulus < param.message_modulus *
+        // This ensures that the space message_modulus*carry_modulus < param.message_modulus *
         // param.carry_modulus
         let carry_modulus = (public_key.parameters.message_modulus().0
             * public_key.parameters.carry_modulus().0)
             / message_modulus.0;
 
-        //The delta is the one defined by the parameters
-        let delta = (1_u64 << 63)
-            / (public_key.parameters.message_modulus().0 * public_key.parameters.carry_modulus().0)
-                as u64;
+        let m = Cleartext(message % message_modulus.0);
 
-        //The input is reduced modulus the message_modulus
-        let m = message % message_modulus.0 as u64;
-
-        let shifted_message = m * delta;
-        // encode the message
-        let plain = Plaintext(shifted_message);
+        let plain =
+            ShortintEncoding::from_parameters(public_key.parameters, PaddingBit::Yes).encode(m);
 
         // This allocates the required ct
         let mut encrypted_ct = LweCiphertextOwned::new(
@@ -170,7 +169,7 @@ impl ShortintEngine {
             NoiseLevel::NOMINAL,
             message_modulus,
             CarryModulus(carry_modulus),
-            public_key.pbs_order,
+            public_key.atomic_pattern,
         )
     }
 
@@ -196,26 +195,19 @@ impl ShortintEngine {
         messages: impl Iterator<Item = u64>,
         message_modulus: MessageModulus,
     ) -> Vec<Ciphertext> {
-        //This ensures that the space message_modulus*carry_modulus < param.message_modulus *
+        // This ensures that the space message_modulus*carry_modulus < param.message_modulus *
         // param.carry_modulus
         let carry_modulus = (public_key.parameters.message_modulus().0
             * public_key.parameters.carry_modulus().0)
             / message_modulus.0;
 
-        //The delta is the one defined by the parameters
-        let delta = (1_u64 << 63)
-            / (public_key.parameters.message_modulus().0 * public_key.parameters.carry_modulus().0)
-                as u64;
-
         let encoded: Vec<_> = messages
             .into_iter()
             .map(move |message| {
-                //The input is reduced modulus the message_modulus
-                let m = message % message_modulus.0 as u64;
+                let m = message % message_modulus.0;
 
-                let shifted_message = m * delta;
-                // encode the message
-                Plaintext(shifted_message)
+                ShortintEncoding::from_parameters(public_key.parameters, PaddingBit::Yes)
+                    .encode(Cleartext(m))
             })
             .collect();
 
@@ -245,7 +237,7 @@ impl ShortintEngine {
                     NoiseLevel::NOMINAL,
                     message_modulus,
                     CarryModulus(carry_modulus),
-                    public_key.pbs_order,
+                    public_key.atomic_pattern,
                 )
             })
             .collect()
@@ -257,11 +249,6 @@ impl ShortintEngine {
         message: u64,
         message_moduli: impl Iterator<Item = MessageModulus>,
     ) -> Vec<Ciphertext> {
-        //The delta is the one defined by the parameters
-        let delta = (1_u64 << 63)
-            / (public_key.parameters.message_modulus().0 * public_key.parameters.carry_modulus().0)
-                as u64;
-
         let (encoded, moduli): (Vec<_>, Vec<_>) = message_moduli
             .map(|message_modulus| {
                 //This ensures that the space message_modulus*carry_modulus < param.message_modulus
@@ -272,12 +259,13 @@ impl ShortintEngine {
                         / message_modulus.0,
                 );
 
-                //The input is reduced modulus the message_modulus
-                let m = message % message_modulus.0 as u64;
+                let m = message % message_modulus.0;
 
-                let shifted_message = m * delta;
-                // encode the message
-                (Plaintext(shifted_message), (message_modulus, carry_modulus))
+                let encoded =
+                    ShortintEncoding::from_parameters(public_key.parameters, PaddingBit::Yes)
+                        .encode(Cleartext(m));
+
+                (encoded, (message_modulus, carry_modulus))
             })
             .unzip();
 
@@ -308,7 +296,7 @@ impl ShortintEngine {
                     NoiseLevel::NOMINAL,
                     message_modulus,
                     carry_modulus,
-                    public_key.pbs_order,
+                    public_key.atomic_pattern,
                 )
             })
             .collect()
@@ -319,15 +307,8 @@ impl ShortintEngine {
         public_key: &PublicKey,
         message: u64,
     ) -> Ciphertext {
-        //Multiply by 2 to reshift and exclude the padding bit
-        let delta = ((1_u64 << 63)
-            / (public_key.parameters.message_modulus().0 * public_key.parameters.carry_modulus().0)
-                as u64)
-            * 2;
-
-        let shifted_message = message * delta;
-        // encode the message
-        let plain = Plaintext(shifted_message);
+        let plain = ShortintEncoding::from_parameters(public_key.parameters, PaddingBit::No)
+            .encode(Cleartext(message));
 
         // This allocates the required ct
         let mut encrypted_ct = LweCiphertextOwned::new(
@@ -349,7 +330,7 @@ impl ShortintEngine {
             NoiseLevel::NOMINAL,
             public_key.parameters.message_modulus(),
             public_key.parameters.carry_modulus(),
-            public_key.pbs_order,
+            public_key.atomic_pattern,
         )
     }
 
@@ -372,17 +353,10 @@ impl ShortintEngine {
         public_key: &CompressedPublicKey,
         messages: impl Iterator<Item = u64>,
     ) -> Vec<Ciphertext> {
-        //Multiply by 2 to reshift and exclude the padding bit
-        let delta = ((1_u64 << 63)
-            / (public_key.parameters.message_modulus().0 * public_key.parameters.carry_modulus().0)
-                as u64)
-            * 2;
-
         let encoded: Vec<_> = messages
             .map(|message| {
-                let shifted_message = message * delta;
-                // encode the message
-                Plaintext(shifted_message)
+                ShortintEncoding::from_parameters(public_key.parameters, PaddingBit::No)
+                    .encode(Cleartext(message))
             })
             .collect();
 
@@ -412,7 +386,7 @@ impl ShortintEngine {
                     NoiseLevel::NOMINAL,
                     public_key.parameters.message_modulus(),
                     public_key.parameters.carry_modulus(),
-                    public_key.pbs_order,
+                    public_key.atomic_pattern,
                 )
             })
             .collect()
@@ -425,7 +399,7 @@ impl ShortintEngine {
         message_modulus: MessageModulus,
     ) -> Ciphertext {
         let carry_modulus = CarryModulus(1);
-        let m = (message % message_modulus.0 as u64) as u128;
+        let m = (message % message_modulus.0) as u128;
         let shifted_message = m * (1 << 64) / message_modulus.0 as u128;
         // encode the message
 
@@ -451,7 +425,7 @@ impl ShortintEngine {
             NoiseLevel::NOMINAL,
             message_modulus,
             carry_modulus,
-            public_key.pbs_order,
+            public_key.atomic_pattern,
         )
     }
 
@@ -462,7 +436,7 @@ impl ShortintEngine {
         message_modulus: MessageModulus,
     ) -> Ciphertext {
         let carry_modulus = CarryModulus(1);
-        let m = (message % message_modulus.0 as u64) as u128;
+        let m = (message % message_modulus.0) as u128;
         let shifted_message = m * (1 << 64) / message_modulus.0 as u128;
         // encode the message
 
@@ -488,7 +462,7 @@ impl ShortintEngine {
             NoiseLevel::NOMINAL,
             message_modulus,
             carry_modulus,
-            public_key.pbs_order,
+            public_key.atomic_pattern,
         )
     }
 
@@ -502,8 +476,7 @@ impl ShortintEngine {
 
         let (encoded, message_moduli): (Vec<_>, Vec<_>) = message_moduli
             .map(|message_modulus| {
-                //The input is reduced modulus the message_modulus
-                let m = (message % message_modulus.0 as u64) as u128;
+                let m = (message % message_modulus.0) as u128;
                 let shifted_message = m * (1 << 64) / message_modulus.0 as u128;
                 // encode the message
 
@@ -538,7 +511,7 @@ impl ShortintEngine {
                     NoiseLevel::NOMINAL,
                     message_modulus,
                     carry_modulus,
-                    public_key.pbs_order,
+                    public_key.atomic_pattern,
                 )
             })
             .collect()
@@ -549,12 +522,8 @@ impl ShortintEngine {
         public_key: &PublicKey,
         message: u64,
     ) -> Ciphertext {
-        let delta = (1_u64 << 63)
-            / (public_key.parameters.message_modulus().0 * public_key.parameters.carry_modulus().0)
-                as u64;
-        let shifted_message = message * delta;
-        // encode the message
-        let plain = Plaintext(shifted_message);
+        let plain = ShortintEncoding::from_parameters(public_key.parameters, PaddingBit::Yes)
+            .encode(Cleartext(message));
 
         // This allocates the required ct
         let mut encrypted_ct = LweCiphertextOwned::new(
@@ -579,7 +548,7 @@ impl ShortintEngine {
             NoiseLevel::NOMINAL,
             public_key.parameters.message_modulus(),
             public_key.parameters.carry_modulus(),
-            public_key.pbs_order,
+            public_key.atomic_pattern,
         )
     }
 
@@ -588,12 +557,8 @@ impl ShortintEngine {
         public_key: &CompressedPublicKey,
         message: u64,
     ) -> Ciphertext {
-        let delta = (1_u64 << 63)
-            / (public_key.parameters.message_modulus().0 * public_key.parameters.carry_modulus().0)
-                as u64;
-        let shifted_message = message * delta;
-        // encode the message
-        let plain = Plaintext(shifted_message);
+        let plain = ShortintEncoding::from_parameters(public_key.parameters, PaddingBit::Yes)
+            .encode(Cleartext(message));
 
         // This allocates the required ct
         let mut encrypted_ct = LweCiphertextOwned::new(
@@ -618,7 +583,7 @@ impl ShortintEngine {
             NoiseLevel::NOMINAL,
             public_key.parameters.message_modulus(),
             public_key.parameters.carry_modulus(),
-            public_key.pbs_order,
+            public_key.atomic_pattern,
         )
     }
 }

@@ -17,12 +17,13 @@ use crate::shortint::parameters::Degree;
 ///
 /// ```rust
 /// use tfhe::integer::gen_keys_radix;
-/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
 /// use tfhe::shortint::PBSParameters;
 ///
 /// // We have 4 * 2 = 8 bits of message
 /// let size = 4;
-/// let (cks, sks) = gen_keys_radix::<PBSParameters>(PARAM_MESSAGE_2_CARRY_2_KS_PBS.into(), size);
+/// let (cks, sks) =
+///     gen_keys_radix::<PBSParameters>(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128.into(), size);
 ///
 /// let clear = 3u8;
 ///
@@ -46,7 +47,9 @@ impl ParameterSetConformant for CompressedModulusSwitchedRadixCiphertext {
     type ParameterSet = RadixCiphertextConformanceParams;
 
     fn is_conformant(&self, params: &RadixCiphertextConformanceParams) -> bool {
-        self.0.is_conformant(params)
+        let Self(ct) = self;
+
+        ct.is_conformant(params)
     }
 }
 
@@ -57,12 +60,13 @@ impl ParameterSetConformant for CompressedModulusSwitchedRadixCiphertext {
 ///
 /// ```rust
 /// use tfhe::integer::gen_keys_radix;
-/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+/// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
 /// use tfhe::shortint::PBSParameters;
 ///
 /// // We have 4 * 2 = 8 bits of message
 /// let size = 4;
-/// let (cks, sks) = gen_keys_radix::<PBSParameters>(PARAM_MESSAGE_2_CARRY_2_KS_PBS.into(), size);
+/// let (cks, sks) =
+///     gen_keys_radix::<PBSParameters>(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128.into(), size);
 ///
 /// let clear = -3i8;
 ///
@@ -86,7 +90,9 @@ impl ParameterSetConformant for CompressedModulusSwitchedSignedRadixCiphertext {
     type ParameterSet = RadixCiphertextConformanceParams;
 
     fn is_conformant(&self, params: &RadixCiphertextConformanceParams) -> bool {
-        self.0.is_conformant(params)
+        let Self(ct) = self;
+
+        ct.is_conformant(params)
     }
 }
 
@@ -101,6 +107,11 @@ impl ParameterSetConformant for CompressedModulusSwitchedRadixCiphertextGeneric 
     type ParameterSet = RadixCiphertextConformanceParams;
 
     fn is_conformant(&self, params: &RadixCiphertextConformanceParams) -> bool {
+        let Self {
+            paired_blocks,
+            last_block,
+        } = self;
+
         let mut shortint_params = params.shortint_params;
 
         shortint_params.degree = Degree::new(
@@ -111,17 +122,16 @@ impl ParameterSetConformant for CompressedModulusSwitchedRadixCiphertextGeneric 
             .get(),
         );
 
-        let paired_blocks_len_ok = self.paired_blocks.len() == params.num_blocks_per_integer / 2;
+        let paired_blocks_len_ok = paired_blocks.len() == params.num_blocks_per_integer / 2;
 
-        let paired_blocks_ok = self
-            .paired_blocks
+        let paired_blocks_ok = paired_blocks
             .iter()
             .all(|block| block.is_conformant(&shortint_params));
 
         let last_item_ok = if params.num_blocks_per_integer % 2 == 1 {
-            self.last_block.as_ref().map_or(false, |last_block| {
-                last_block.is_conformant(&params.shortint_params)
-            })
+            last_block
+                .as_ref()
+                .is_some_and(|last_block| last_block.is_conformant(&params.shortint_params))
         } else {
             true
         };

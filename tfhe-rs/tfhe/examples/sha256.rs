@@ -4,7 +4,10 @@ use std::io::{stdin, Read};
 use std::mem::MaybeUninit;
 use std::{array, iter};
 use tfhe::prelude::*;
-use tfhe::shortint::parameters::*;
+use tfhe::shortint::parameters::current_params::{
+    V1_5_PARAM_MULTI_BIT_GROUP_2_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64,
+    V1_5_PARAM_MULTI_BIT_GROUP_3_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64,
+};
 use tfhe::{set_server_key, ClientKey, CompressedServerKey, ConfigBuilder, Device, FheUint32};
 
 // might improve error message on type error
@@ -135,18 +138,18 @@ impl Default for Args {
 }
 
 impl Args {
-    fn from_arg_list(mut progam_args: std::env::Args) -> Self {
+    fn from_arg_list(mut program_args: std::env::Args) -> Self {
         let mut args = Args::default();
         let mut had_invalid = false;
 
-        progam_args.next().unwrap(); // This is argv[0], the program name/path
-        while let Some(arg) = progam_args.next() {
+        program_args.next().unwrap(); // This is argv[0], the program name/path
+        while let Some(arg) = program_args.next() {
             if arg == "--parallel" {
                 args.parallel = true;
             } else if arg == "--trivial" {
                 args.trivial = true;
             } else if arg == "--device" {
-                let Some(value) = progam_args.next() else {
+                let Some(value) = program_args.next() else {
                     panic!("Expected value after --device");
                 };
 
@@ -161,7 +164,7 @@ impl Args {
                     _ => panic!("Unsupported device {value}"),
                 }
             } else if arg == "--multibit" {
-                let Some(value) = progam_args.next() else {
+                let Some(value) = program_args.next() else {
                     panic!("Expected value after --multibit");
                 };
 
@@ -187,12 +190,10 @@ fn main() -> Result<(), std::io::Error> {
     let config = match args.multibit {
         None => ConfigBuilder::default(),
         Some(2) => ConfigBuilder::with_custom_parameters(
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_2_KS_PBS,
-            None,
+            V1_5_PARAM_MULTI_BIT_GROUP_2_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64,
         ),
         Some(3) => ConfigBuilder::with_custom_parameters(
-            PARAM_MULTI_BIT_MESSAGE_2_CARRY_2_GROUP_3_KS_PBS,
-            None,
+            V1_5_PARAM_MULTI_BIT_GROUP_3_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M64,
         ),
         Some(v) => {
             panic!("Invalid multibit setting {v}");
@@ -227,6 +228,11 @@ fn main() -> Result<(), std::io::Error> {
                 set_server_key(server_key.clone());
             });
             set_server_key(server_key);
+        }
+        #[cfg(feature = "hpu")]
+        (Device::Hpu, _) => {
+            println!("Hpu is not supported");
+            std::process::exit(1);
         }
     }
     println!("key gen end");
@@ -296,7 +302,10 @@ fn encrypt_data<T: AsRef<[u8]>>(input: T, client_key: Option<&ClientKey>) -> Vec
         .iter()
         .copied()
         .chain(iter::once(0x80))
-        .chain(iter::repeat(0x00).take(if remainder == 0 { 0 } else { 64 - remainder }))
+        .chain(std::iter::repeat_n(
+            0x00,
+            if remainder == 0 { 0 } else { 64 - remainder },
+        ))
         .chain(((len * 8) as u64).to_be_bytes());
 
     ArrayChunks::<_, 4>::new(bytes_iter)
@@ -419,9 +428,9 @@ fn sha256_fhe_parallel(input: Vec<FheUint32>) -> [FheUint32; 8] {
         for i in 16..64 {
             let (s0_a, s0_b, s1_a, s1_b) = join!(
                 || par_rotr(&w[i - 15], [7u32, 18]),
-                || (&w[i - 15] >> 3u32),
+                || &w[i - 15] >> 3u32,
                 || par_rotr(&w[i - 2], [17u32, 19]),
-                || (&w[i - 2] >> 10u32),
+                || &w[i - 2] >> 10u32,
             );
 
             let (s0, s1) =

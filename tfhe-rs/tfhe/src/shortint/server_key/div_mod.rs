@@ -1,6 +1,8 @@
-use crate::shortint::{Ciphertext, ServerKey};
+use crate::shortint::atomic_pattern::AtomicPattern;
+use crate::shortint::server_key::GenericServerKey;
+use crate::shortint::Ciphertext;
 
-impl ServerKey {
+impl<AP: AtomicPattern> GenericServerKey<AP> {
     /// Compute a division between two ciphertexts.
     ///
     /// The result is returned in a _new_ ciphertext.
@@ -22,28 +24,13 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
     ///
     /// let clear_1 = 1;
     /// let clear_2 = 2;
-    ///
-    /// // Encrypt two messages
-    /// let ct_1 = cks.encrypt(clear_1);
-    /// let ct_2 = cks.encrypt(clear_2);
-    ///
-    /// // Compute homomorphically a multiplication
-    /// let ct_res = sks.div(&ct_1, &ct_2);
-    ///
-    /// // Decrypt
-    /// let res = cks.decrypt(&ct_res);
-    /// assert_eq!(clear_1 / clear_2, res);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt two messages
     /// let ct_1 = cks.encrypt(clear_1);
@@ -83,28 +70,13 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
     ///
     /// let clear_1 = 1;
     /// let clear_2 = 2;
-    ///
-    /// // Encrypt two messages
-    /// let mut ct_1 = cks.encrypt(clear_1);
-    /// let ct_2 = cks.encrypt(clear_2);
-    ///
-    /// // Compute homomorphically a multiplication
-    /// sks.div_assign(&mut ct_1, &ct_2);
-    ///
-    /// // Decrypt
-    /// let res = cks.decrypt(&ct_1);
-    /// assert_eq!(clear_1 / clear_2, res);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt two messages
     /// let mut ct_1 = cks.encrypt(clear_1);
@@ -147,28 +119,13 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
     ///
     /// let clear_1 = 1;
     /// let clear_2 = 2;
-    ///
-    /// // Encrypt two messages
-    /// let ct_1 = cks.encrypt(clear_1);
-    /// let ct_2 = cks.encrypt(clear_2);
-    ///
-    /// // Compute homomorphically a multiplication
-    /// let ct_res = sks.unchecked_div(&ct_1, &ct_2);
-    ///
-    /// // Decrypt
-    /// let res = cks.decrypt(&ct_res);
-    /// assert_eq!(clear_1 / clear_2, res);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
     ///
     /// // Encrypt two messages
     /// let ct_1 = cks.encrypt(clear_1);
@@ -200,9 +157,7 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
@@ -220,22 +175,9 @@ impl ServerKey {
     /// // Decrypt
     /// let res = cks.decrypt(&ct_1);
     /// assert_eq!(clear_1 / clear_2, res);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
-    ///
-    /// // Encrypt two messages
-    /// let mut ct_1 = cks.encrypt(clear_1);
-    /// let ct_2 = cks.encrypt(clear_2);
-    ///
-    /// // Compute homomorphically a multiplication
-    /// sks.unchecked_div_assign(&mut ct_1, &ct_2);
-    ///
-    /// // Decrypt
-    /// let res = cks.decrypt(&ct_1);
-    /// assert_eq!(clear_1 / clear_2, res);
     /// ```
     pub fn unchecked_div_assign(&self, ct_left: &mut Ciphertext, ct_right: &Ciphertext) {
-        let value_on_div_by_zero = (ct_left.message_modulus.0 - 1) as u64;
+        let value_on_div_by_zero = ct_left.message_modulus.0 - 1;
         self.unchecked_evaluate_bivariate_function_assign(ct_left, ct_right, |x, y| {
             safe_division(x, y, value_on_div_by_zero)
         });
@@ -254,9 +196,7 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
@@ -274,22 +214,9 @@ impl ServerKey {
     /// // Decrypt
     /// let res = cks.decrypt(&ct_res);
     /// assert_eq!(clear_1 / clear_2, res);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
-    ///
-    /// // Encrypt two messages
-    /// let mut ct_1 = cks.encrypt(clear_1);
-    /// let mut ct_2 = cks.encrypt(clear_2);
-    ///
-    /// // Compute homomorphically a multiplication
-    /// let ct_res = sks.smart_div(&mut ct_1, &mut ct_2);
-    ///
-    /// // Decrypt
-    /// let res = cks.decrypt(&ct_res);
-    /// assert_eq!(clear_1 / clear_2, res);
     /// ```
     pub fn smart_div(&self, ct_left: &mut Ciphertext, ct_right: &mut Ciphertext) -> Ciphertext {
-        let value_on_div_by_zero = (ct_left.message_modulus.0 - 1) as u64;
+        let value_on_div_by_zero = ct_left.message_modulus.0 - 1;
         self.smart_evaluate_bivariate_function(ct_left, ct_right, |x, y| {
             safe_division(x, y, value_on_div_by_zero)
         })
@@ -308,9 +235,7 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::shortint::gen_keys;
-    /// use tfhe::shortint::parameters::{
-    ///     PARAM_MESSAGE_2_CARRY_2_KS_PBS, PARAM_MESSAGE_2_CARRY_2_PBS_KS,
-    /// };
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
     ///
     /// // Generate the client key and the server key
     /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_KS_PBS);
@@ -320,20 +245,7 @@ impl ServerKey {
     ///
     /// // Encrypt two messages
     /// let mut ct_1 = cks.encrypt(clear_1);
-    /// let mut ct_2 = cks.encrypt(clear_2);
-    ///
-    /// // Compute homomorphically a multiplication
-    /// sks.unchecked_div_assign(&mut ct_1, &ct_2);
-    ///
-    /// // Decrypt
-    /// let res = cks.decrypt(&ct_1);
-    /// assert_eq!(clear_1 / clear_2, res);
-    ///
-    /// let (cks, sks) = gen_keys(PARAM_MESSAGE_2_CARRY_2_PBS_KS);
-    ///
-    /// // Encrypt two messages
-    /// let mut ct_1 = cks.encrypt(clear_1);
-    /// let mut ct_2 = cks.encrypt(clear_2);
+    /// let ct_2 = cks.encrypt(clear_2);
     ///
     /// // Compute homomorphically a multiplication
     /// sks.unchecked_div_assign(&mut ct_1, &ct_2);
@@ -343,7 +255,7 @@ impl ServerKey {
     /// assert_eq!(clear_1 / clear_2, res);
     /// ```
     pub fn smart_div_assign(&self, ct_left: &mut Ciphertext, ct_right: &mut Ciphertext) {
-        let value_on_div_by_zero = (ct_left.message_modulus.0 - 1) as u64;
+        let value_on_div_by_zero = ct_left.message_modulus.0 - 1;
         self.smart_evaluate_bivariate_function_assign(ct_left, ct_right, |x, y| {
             safe_division(x, y, value_on_div_by_zero)
         });

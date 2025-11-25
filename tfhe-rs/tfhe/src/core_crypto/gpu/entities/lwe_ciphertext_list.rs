@@ -1,5 +1,5 @@
-use crate::core_crypto::gpu::vec::CudaVec;
-use crate::core_crypto::gpu::{CudaLweList, CudaStreams};
+use crate::core_crypto::gpu::vec::{range_bounds_to_start_end, CudaVec};
+use crate::core_crypto::gpu::{CudaLweList, CudaStreams, GpuIndex};
 use crate::core_crypto::prelude::{
     CiphertextModulus, Container, LweCiphertext, LweCiphertextCount, LweCiphertextList,
     LweDimension, LweSize, UnsignedInteger,
@@ -7,7 +7,7 @@ use crate::core_crypto::prelude::{
 use tfhe_cuda_backend::cuda_bind::cuda_memcpy_async_gpu_to_gpu;
 
 /// A structure representing a vector of LWE ciphertexts with 64 bits of precision on the GPU.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct CudaLweCiphertextList<T: UnsignedInteger>(pub(crate) CudaLweList<T>);
 
 #[allow(dead_code)]
@@ -42,21 +42,31 @@ impl<T: UnsignedInteger> CudaLweCiphertextList<T> {
         h_ct: &LweCiphertextList<C>,
         streams: &CudaStreams,
     ) -> Self {
+        let res = unsafe { Self::from_lwe_ciphertext_list_async(h_ct, streams) };
+        streams.synchronize();
+        res
+    }
+
+    /// # Safety
+    ///
+    /// - `stream` __must__ be synchronized to guarantee computation has finished, and inputs must
+    ///   not be dropped until stream is synchronised
+    pub unsafe fn from_lwe_ciphertext_list_async<C: Container<Element = T>>(
+        h_ct: &LweCiphertextList<C>,
+        streams: &CudaStreams,
+    ) -> Self {
         let lwe_dimension = h_ct.lwe_size().to_lwe_dimension();
         let lwe_ciphertext_count = h_ct.lwe_ciphertext_count();
         let ciphertext_modulus = h_ct.ciphertext_modulus();
 
         // Copy to the GPU
         let h_input = h_ct.as_view().into_container();
-        let mut d_vec = CudaVec::new(
+        let mut d_vec = CudaVec::new_async(
             lwe_dimension.to_lwe_size().0 * lwe_ciphertext_count.0,
             streams,
             0,
         );
-        unsafe {
-            d_vec.copy_from_cpu_async(h_input.as_ref(), streams, 0);
-        }
-        streams.synchronize();
+        d_vec.copy_from_cpu_async(h_input.as_ref(), streams, 0);
         let cuda_lwe_list = CudaLweList {
             d_vec,
             lwe_ciphertext_count,
@@ -118,7 +128,7 @@ impl<T: UnsignedInteger> CudaLweCiphertextList<T> {
                 first_item.0.d_vec.as_c_ptr(0),
                 size as u64,
                 streams.ptr[0],
-                streams.gpu_indexes[0],
+                streams.gpu_indexes[0].get(),
             );
             ptr = ptr.wrapping_byte_add(size);
             for list in cuda_ciphertexts_list_vec {
@@ -127,7 +137,7 @@ impl<T: UnsignedInteger> CudaLweCiphertextList<T> {
                     list.0.d_vec.as_c_ptr(0),
                     size as u64,
                     streams.ptr[0],
-                    streams.gpu_indexes[0],
+                    streams.gpu_indexes[0].get(),
                 );
                 ptr = ptr.wrapping_byte_add(size);
             }
@@ -199,49 +209,12 @@ impl<T: UnsignedInteger> CudaLweCiphertextList<T> {
         LweCiphertext::from_container(container, self.ciphertext_modulus())
     }
 
-    /// ```rust
-    /// use tfhe::core_crypto::gpu::lwe_ciphertext_list::CudaLweCiphertextList;
-    /// use tfhe::core_crypto::gpu::CudaStreams;
-    /// use tfhe::core_crypto::prelude::{
-    ///     CiphertextModulus, LweCiphertextCount, LweCiphertextList, LweSize,
-    /// };
-    ///
-    /// let mut streams = CudaStreams::new_single_gpu(0);
-    ///
-    /// let lwe_size = LweSize(743);
-    /// let ciphertext_modulus = CiphertextModulus::new_native();
-    /// let lwe_ciphertext_count = LweCiphertextCount(2);
-    ///
-    /// // Create a new LweCiphertextList
-    /// let lwe_list = LweCiphertextList::new(0u64, lwe_size, lwe_ciphertext_count, ciphertext_modulus);
-    ///
-    /// // Copy to GPU
-    /// let d_lwe_list = CudaLweCiphertextList::from_lwe_ciphertext_list(&lwe_list, &mut streams);
-    /// let d_lwe_list_copied = d_lwe_list.duplicate(&mut streams);
-    ///
-    /// let lwe_list_copied = d_lwe_list_copied.to_lwe_ciphertext_list(&mut streams);
-    ///
-    /// assert_eq!(lwe_list, lwe_list_copied);
-    /// ```
     pub fn duplicate(&self, streams: &CudaStreams) -> Self {
-        let lwe_dimension = self.lwe_dimension();
-        let lwe_ciphertext_count = self.lwe_ciphertext_count();
-        let ciphertext_modulus = self.ciphertext_modulus();
+        Self(self.0.duplicate(streams))
+    }
 
-        // Copy to the GPU
-        let mut d_vec = CudaVec::new(self.0.d_vec.len(), streams, 0);
-        unsafe {
-            d_vec.copy_from_gpu_async(&self.0.d_vec, streams, 0);
-        }
-        streams.synchronize();
-
-        let cuda_lwe_list = CudaLweList {
-            d_vec,
-            lwe_ciphertext_count,
-            lwe_dimension,
-            ciphertext_modulus,
-        };
-        Self(cuda_lwe_list)
+    pub(crate) fn gpu_indexes(&self) -> &[GpuIndex] {
+        self.0.d_vec.gpu_indexes.as_slice()
     }
 
     pub(crate) fn lwe_dimension(&self) -> LweDimension {
@@ -254,5 +227,61 @@ impl<T: UnsignedInteger> CudaLweCiphertextList<T> {
 
     pub(crate) fn ciphertext_modulus(&self) -> CiphertextModulus<T> {
         self.0.ciphertext_modulus
+    }
+
+    /// # Safety
+    ///
+    /// - `stream` __must__ be synchronized to guarantee computation has finished, and inputs must
+    ///   not be dropped until stream is synchronised
+    pub unsafe fn set_to_zero_async(&mut self, streams: &CudaStreams) {
+        self.0.d_vec.memset_async(0u64, streams, 0);
+    }
+
+    pub fn set_to_zero(&mut self, streams: &CudaStreams) {
+        unsafe {
+            self.set_to_zero_async(streams);
+            streams.synchronize_one(0);
+        }
+    }
+
+    pub fn get<R>(&self, streams: &CudaStreams, range: R) -> Self
+    where
+        R: std::ops::RangeBounds<usize>,
+    {
+        let (start, end) = range_bounds_to_start_end(self.0.d_vec.len(), range).into_inner();
+
+        let lwe_dimension = self.lwe_dimension();
+        let slice_lwe_ciphertext_count = LweCiphertextCount(end - start + 1);
+        let ciphertext_modulus = self.ciphertext_modulus();
+
+        let d_vec = unsafe {
+            let mut d_vec = CudaVec::new_async(
+                lwe_dimension.to_lwe_size().0 * slice_lwe_ciphertext_count.0,
+                streams,
+                0,
+            );
+
+            let copy_start = start * lwe_dimension.to_lwe_size().0;
+            let copy_end = (end + 1) * lwe_dimension.to_lwe_size().0;
+            d_vec.copy_src_range_gpu_to_gpu_async(copy_start..copy_end, &self.0.d_vec, streams, 0);
+
+            streams.synchronize();
+            d_vec
+        };
+
+        let cuda_lwe_list = CudaLweList {
+            d_vec,
+            lwe_ciphertext_count: slice_lwe_ciphertext_count,
+            lwe_dimension,
+            ciphertext_modulus,
+        };
+
+        Self(cuda_lwe_list)
+    }
+    pub fn get_decompression_size_on_gpu<R>(&self, _streams: &CudaStreams, _range: R) -> u64
+    where
+        R: std::ops::RangeBounds<usize>,
+    {
+        0
     }
 }

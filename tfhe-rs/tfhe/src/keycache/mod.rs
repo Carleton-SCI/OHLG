@@ -7,7 +7,7 @@ pub mod utils {
     use fs2::FileExt;
     use serde::de::DeserializeOwned;
     use serde::Serialize;
-    use std::fs::File;
+    use std::fs::{File, OpenOptions};
     use std::io::{BufReader, BufWriter};
     use std::ops::Deref;
     use std::path::PathBuf;
@@ -33,7 +33,15 @@ pub mod utils {
             )*
         };
 
-        ($param_type:ty => $($(#[$cfg:meta])? $const_param:ident),* $(,)? ) => {
+        (@fallback) => {
+            panic!("Unnamed parameters")
+        };
+
+        (@fallback: $self:ident, $name_fallback:ident) => {
+            $name_fallback($self)
+        };
+
+        ($param_type:ty => $($(#[$cfg:meta])? $const_param:ident),* $(,)? $(; fallback => $name_fallback:ident)? ) => {
             $(
                 $(#[$cfg])?
                 named_params_impl!(expose $const_param);
@@ -45,7 +53,23 @@ pub mod utils {
                         $(#[$cfg])?
                         named_params_impl!({*self; $param_type} == ( $const_param ));
                     )*
-                    panic!("Unnamed parameters");
+
+                    named_params_impl!(@fallback$(: self, $name_fallback)?)
+                }
+            }
+
+            ::paste::paste! {
+                pub fn [<get_ $param_type:snake _from_name>](name: &str) -> $param_type  {
+                    match name {
+                        $(
+                            $(#[$cfg])?
+                            [<$const_param _NAME>] => <$param_type>::from($const_param) ,
+                        )*
+                        _ => panic!(
+                            "Could not find parameter with name {name}\
+                            Are you querying the wrong parameter type? e.g. ClassicPBSParameter\
+                            instead of CompressionParameters")
+                    }
                 }
             }
         };
@@ -86,8 +110,11 @@ pub mod utils {
 
             if path_buf.exists() {
                 let file = File::open(&path_buf).unwrap();
-                // Lock for reading
-                file.lock_shared().unwrap();
+                // TODO Manage file locking for inter process stuff, unfortunately linux locks are a
+                // mess and nothing seems to work
+                //
+                // Lock for reading this only works for our process not inter process
+                fs2::FileExt::lock_shared(&file).unwrap();
                 let file_reader = BufReader::new(file);
                 bincode::deserialize_from::<_, (P, K)>(file_reader)
                     .ok()
@@ -104,9 +131,20 @@ pub mod utils {
             path_buf.push(param.name());
             path_buf.set_extension("bin");
 
-            let file = File::create(&path_buf).unwrap();
-            // Lock for writing
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(&path_buf)
+                .unwrap();
+
+            // TODO Manage file locking for inter process stuff, unfortunately linux locks are a
+            // mess and nothing seems to work
+            //
+            // Lock for writing this only works for our process not inter process
             file.lock_exclusive().unwrap();
+            // Truncate manually
+            file.set_len(0).unwrap();
 
             let file_writer = BufWriter::new(file);
             bincode::serialize_into(file_writer, &(param, key)).unwrap();

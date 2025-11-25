@@ -7,7 +7,7 @@ use crate::core_crypto::algorithms::slice_algorithms::{
 };
 use crate::core_crypto::commons::ciphertext_modulus::CiphertextModulusKind;
 use crate::core_crypto::commons::generators::EncryptionRandomGenerator;
-use crate::core_crypto::commons::math::random::{ActivatedRandomGenerator, Distribution, Uniform};
+use crate::core_crypto::commons::math::random::{DefaultRandomGenerator, Distribution, Uniform};
 use crate::core_crypto::commons::parameters::*;
 use crate::core_crypto::commons::traits::*;
 use crate::core_crypto::entities::*;
@@ -83,6 +83,13 @@ pub fn fill_glwe_mask_and_body_for_encryption_assign_native_mod_compatible<
         "Mismatched moduli between output_mask ({:?}) and output_body ({:?})",
         output_mask.ciphertext_modulus(),
         output_body.ciphertext_modulus()
+    );
+    assert_eq!(
+        output_mask.glwe_dimension(),
+        glwe_secret_key.glwe_dimension(),
+        "Mismatched GlweDimension between output_mask ({:?}) and glwe_secret_key ({:?})",
+        output_mask.glwe_dimension(),
+        glwe_secret_key.glwe_dimension(),
     );
 
     let ciphertext_modulus = output_body.ciphertext_modulus();
@@ -184,9 +191,8 @@ pub fn fill_glwe_mask_and_body_for_encryption_assign_non_native_mod<
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the GlweSecretKey
 /// let glwe_secret_key = allocate_and_generate_new_binary_glwe_secret_key(
@@ -277,7 +283,7 @@ pub fn encrypt_glwe_ciphertext_assign<Scalar, NoiseDistribution, KeyCont, Output
 ///
 /// WARNING: this assumes the caller manages the coherency of calls to the generator to make sure
 /// the right bytes are generated at the right time.
-pub fn encrypt_seeded_glwe_ciphertext_assign_with_existing_generator<
+pub fn encrypt_seeded_glwe_ciphertext_assign_with_pre_seeded_generator<
     Scalar,
     NoiseDistribution,
     KeyCont,
@@ -522,9 +528,8 @@ pub fn fill_glwe_mask_and_body_for_encryption_other_mod<
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the GlweSecretKey
 /// let glwe_secret_key = allocate_and_generate_new_binary_glwe_secret_key(
@@ -644,9 +649,8 @@ pub fn encrypt_glwe_ciphertext<Scalar, NoiseDistribution, KeyCont, InputCont, Ou
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the GlweSecretKey
 /// let glwe_secret_key = allocate_and_generate_new_binary_glwe_secret_key(
@@ -724,8 +728,11 @@ pub fn encrypt_glwe_ciphertext_list<
     Gen: ByteRandomGenerator,
 {
     assert!(
-        output_glwe_ciphertext_list.polynomial_size().0
-            * output_glwe_ciphertext_list.glwe_ciphertext_count().0
+        output_glwe_ciphertext_list
+            .polynomial_size()
+            .0
+            .checked_mul(output_glwe_ciphertext_list.glwe_ciphertext_count().0)
+            .unwrap()
             == input_plaintext_list.plaintext_count().0,
         "Mismatch between required number of plaintexts: {} ({:?} * {:?}) and input \
         PlaintextCount: {:?}",
@@ -779,7 +786,7 @@ pub fn decrypt_glwe_ciphertext<Scalar, KeyCont, InputCont, OutputCont>(
     input_glwe_ciphertext: &GlweCiphertext<InputCont>,
     output_plaintext_list: &mut PlaintextList<OutputCont>,
 ) where
-    Scalar: UnsignedTorus,
+    Scalar: UnsignedInteger,
     KeyCont: Container<Element = Scalar>,
     InputCont: Container<Element = Scalar>,
     OutputCont: ContainerMut<Element = Scalar>,
@@ -806,7 +813,7 @@ pub fn decrypt_glwe_ciphertext_native_mod_compatible<Scalar, KeyCont, InputCont,
     input_glwe_ciphertext: &GlweCiphertext<InputCont>,
     output_plaintext_list: &mut PlaintextList<OutputCont>,
 ) where
-    Scalar: UnsignedTorus,
+    Scalar: UnsignedInteger,
     KeyCont: Container<Element = Scalar>,
     InputCont: Container<Element = Scalar>,
     OutputCont: ContainerMut<Element = Scalar>,
@@ -857,7 +864,7 @@ pub fn decrypt_glwe_ciphertext_other_mod<Scalar, KeyCont, InputCont, OutputCont>
     input_glwe_ciphertext: &GlweCiphertext<InputCont>,
     output_plaintext_list: &mut PlaintextList<OutputCont>,
 ) where
-    Scalar: UnsignedTorus,
+    Scalar: UnsignedInteger,
     KeyCont: Container<Element = Scalar>,
     InputCont: Container<Element = Scalar>,
     OutputCont: ContainerMut<Element = Scalar>,
@@ -972,8 +979,7 @@ pub fn decrypt_glwe_ciphertext_list<Scalar, KeyCont, InputCont, OutputCont>(
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the plaintext
 /// let msg = 3u64;
@@ -1067,8 +1073,7 @@ pub fn trivially_encrypt_glwe_ciphertext<Scalar, InputCont, OutputCont>(
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the plaintext
 /// let msg = 3u64;
@@ -1076,7 +1081,7 @@ pub fn trivially_encrypt_glwe_ciphertext<Scalar, InputCont, OutputCont>(
 /// let plaintext_list = PlaintextList::new(encoded_msg, PlaintextCount(polynomial_size.0));
 ///
 /// // Create a new GlweCiphertext
-/// let mut glwe = allocate_and_trivially_encrypt_new_glwe_ciphertext(
+/// let glwe = allocate_and_trivially_encrypt_new_glwe_ciphertext(
 ///     glwe_size,
 ///     &plaintext_list,
 ///     ciphertext_modulus,
@@ -1134,7 +1139,10 @@ where
 
 /// Convenience function to share the core logic of the seeded GLWE encryption between all
 /// functions needing it.
-pub fn encrypt_seeded_glwe_ciphertext_with_existing_generator<
+///
+/// WARNING: this assumes the caller manages the coherency of calls to the generator to make sure
+/// the right bytes are generated at the right time.
+pub fn encrypt_seeded_glwe_ciphertext_with_pre_seeded_generator<
     Scalar,
     NoiseDistribution,
     KeyCont,
@@ -1217,10 +1225,7 @@ pub fn encrypt_seeded_glwe_ciphertext_with_existing_generator<
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the GlweSecretKey
 /// let glwe_secret_key = allocate_and_generate_new_binary_glwe_secret_key(
@@ -1297,12 +1302,12 @@ pub fn encrypt_seeded_glwe_ciphertext<
     // Maybe Sized allows to pass Box<dyn Seeder>.
     NoiseSeeder: Seeder + ?Sized,
 {
-    let mut generator = EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+    let mut generator = EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
         output_glwe_ciphertext.compression_seed().seed,
         noise_seeder,
     );
 
-    encrypt_seeded_glwe_ciphertext_with_existing_generator(
+    encrypt_seeded_glwe_ciphertext_with_pre_seeded_generator(
         glwe_secret_key,
         output_glwe_ciphertext,
         input_plaintext_list,
@@ -1318,7 +1323,7 @@ pub fn encrypt_seeded_glwe_ciphertext<
 ///
 /// WARNING: this assumes the caller manages the coherency of calls to the generator to make sure
 /// the right bytes are generated at the right time.
-pub fn encrypt_seeded_glwe_ciphertext_list_with_existing_generator<
+pub fn encrypt_seeded_glwe_ciphertext_list_with_pre_seeded_generator<
     Scalar,
     NoiseDistribution,
     KeyCont,
@@ -1347,7 +1352,11 @@ pub fn encrypt_seeded_glwe_ciphertext_list_with_existing_generator<
         output.glwe_size().to_glwe_dimension(),
     );
     assert!(
-        output.glwe_ciphertext_count().0 * output.polynomial_size().0
+        output
+            .glwe_ciphertext_count()
+            .0
+            .checked_mul(output.polynomial_size().0)
+            .unwrap()
             == encoded.plaintext_count().0,
         "Mismatch between number of output ciphertexts and input plaintexts. \
         Got {:?} plaintexts while {:?} plaintexts are required to encrypt {:?} ciphertexts.",
@@ -1406,10 +1415,7 @@ pub fn encrypt_seeded_glwe_ciphertext_list_with_existing_generator<
 /// // Create the PRNG
 /// let mut seeder = new_seeder();
 /// let seeder = seeder.as_mut();
-/// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
-/// let mut secret_generator =
-///     SecretRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed());
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed());
 ///
 /// // Create the GlweSecretKey
 /// let glwe_secret_key = allocate_and_generate_new_binary_glwe_secret_key(
@@ -1490,12 +1496,12 @@ pub fn encrypt_seeded_glwe_ciphertext_list<
     // Maybe Sized allows to pass Box<dyn Seeder>.
     NoiseSeeder: Seeder + ?Sized,
 {
-    let mut generator = EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(
+    let mut generator = EncryptionRandomGenerator::<DefaultRandomGenerator>::new(
         output.compression_seed().seed,
         noise_seeder,
     );
 
-    encrypt_seeded_glwe_ciphertext_list_with_existing_generator(
+    encrypt_seeded_glwe_ciphertext_list_with_pre_seeded_generator(
         glwe_secret_key,
         output,
         encoded,

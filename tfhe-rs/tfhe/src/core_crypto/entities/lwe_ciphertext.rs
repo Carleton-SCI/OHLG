@@ -70,7 +70,7 @@ impl<'data, T: UnsignedInteger> CreateFrom<&'data [T]> for LweBodyRef<'data, T> 
     type Metadata = LweBodyCreationMetadata<T>;
 
     #[inline]
-    fn create_from(from: &[T], meta: Self::Metadata) -> LweBodyRef<T> {
+    fn create_from(from: &[T], meta: Self::Metadata) -> LweBodyRef<'_, T> {
         let LweBodyCreationMetadata { ciphertext_modulus } = meta;
         LweBodyRef {
             data: &from[0],
@@ -83,7 +83,7 @@ impl<'data, T: UnsignedInteger> CreateFrom<&'data mut [T]> for LweBodyRefMut<'da
     type Metadata = LweBodyCreationMetadata<T>;
 
     #[inline]
-    fn create_from(from: &mut [T], meta: Self::Metadata) -> LweBodyRefMut<T> {
+    fn create_from(from: &mut [T], meta: Self::Metadata) -> LweBodyRefMut<'_, T> {
         let LweBodyCreationMetadata { ciphertext_modulus } = meta;
         LweBodyRefMut {
             data: &mut from[0],
@@ -178,13 +178,15 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 
     type EntityViewMetadata = LweBodyCreationMetadata<Self::Element>;
 
-    type EntityView<'this> = LweBodyRef<'this, Self::Element>
+    type EntityView<'this>
+        = LweBodyRef<'this, Self::Element>
     where
         Self: 'this;
 
     type SelfViewMetadata = LweBodyListCreationMetadata<Self::Element>;
 
-    type SelfView<'this> = LweBodyListView<'this,Self::Element>
+    type SelfView<'this>
+        = LweBodyListView<'this, Self::Element>
     where
         Self: 'this;
 
@@ -208,11 +210,13 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 impl<Scalar: UnsignedInteger, C: ContainerMut<Element = Scalar>> ContiguousEntityContainerMut
     for LweBodyList<C>
 {
-    type EntityMutView<'this> = LweBodyRefMut<'this, Self::Element>
+    type EntityMutView<'this>
+        = LweBodyRefMut<'this, Self::Element>
     where
         Self: 'this;
 
-    type SelfMutView<'this> = LweBodyListMutView<'this, Self::Element>
+    type SelfMutView<'this>
+        = LweBodyListMutView<'this, Self::Element>
     where
         Self: 'this;
 }
@@ -429,13 +433,15 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 
     type EntityViewMetadata = LweMaskCreationMetadata<Self::Element>;
 
-    type EntityView<'this> = LweMask<&'this [Self::Element]>
+    type EntityView<'this>
+        = LweMask<&'this [Self::Element]>
     where
         Self: 'this;
 
     type SelfViewMetadata = LweMaskListCreationMetadata<Self::Element>;
 
-    type SelfView<'this> = LweMaskListView<'this, Self::Element>
+    type SelfView<'this>
+        = LweMaskListView<'this, Self::Element>
     where
         Self: 'this;
 
@@ -460,11 +466,13 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> ContiguousEntityCo
 impl<Scalar: UnsignedInteger, C: ContainerMut<Element = Scalar>> ContiguousEntityContainerMut
     for LweMaskList<C>
 {
-    type EntityMutView<'this> = LweMask<&'this mut [Self::Element]>
+    type EntityMutView<'this>
+        = LweMask<&'this mut [Self::Element]>
     where
         Self: 'this;
 
-    type SelfMutView<'this> = LweMaskListMutView<'this,Self::Element>
+    type SelfMutView<'this>
+        = LweMaskListMutView<'this, Self::Element>
     where
         Self: 'this;
 }
@@ -742,7 +750,7 @@ pub type LweCiphertextMutView<'data, Scalar> = LweCiphertext<&'data mut [Scalar]
 /// Can be used on a server to check if client inputs are well formed
 /// before running a computation on them
 #[derive(Copy, Clone)]
-pub struct LweCiphertextParameters<T: UnsignedInteger> {
+pub struct LweCiphertextConformanceParams<T: UnsignedInteger> {
     pub lwe_dim: LweDimension,
     pub ct_modulus: CiphertextModulus<T>,
     pub ms_decompression_method: MsDecompressionType,
@@ -758,12 +766,20 @@ impl<C: Container> ParameterSetConformant for LweCiphertext<C>
 where
     C::Element: UnsignedInteger,
 {
-    type ParameterSet = LweCiphertextParameters<C::Element>;
+    type ParameterSet = LweCiphertextConformanceParams<C::Element>;
 
-    fn is_conformant(&self, lwe_ct_parameters: &LweCiphertextParameters<C::Element>) -> bool {
-        check_encrypted_content_respects_mod(self, lwe_ct_parameters.ct_modulus)
+    fn is_conformant(
+        &self,
+        lwe_ct_parameters: &LweCiphertextConformanceParams<C::Element>,
+    ) -> bool {
+        let Self {
+            data,
+            ciphertext_modulus,
+        } = self;
+
+        check_encrypted_content_respects_mod(data, lwe_ct_parameters.ct_modulus)
             && self.lwe_size() == lwe_ct_parameters.lwe_dim.to_lwe_size()
-            && self.ciphertext_modulus() == lwe_ct_parameters.ct_modulus
+            && *ciphertext_modulus == lwe_ct_parameters.ct_modulus
     }
 }
 

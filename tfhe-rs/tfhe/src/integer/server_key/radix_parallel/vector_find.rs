@@ -50,6 +50,10 @@ impl<Clear> MatchValues<Clear> {
         let matches = range.map(|input| (input, func(input))).collect();
         Self(matches)
     }
+    // Public method to access the private field
+    pub fn get_values(&self) -> &Vec<(Clear, Clear)> {
+        &self.0
+    }
 }
 
 impl ServerKey {
@@ -115,7 +119,7 @@ impl ServerKey {
             rayon::join(
                 || {
                     let result: RadixCiphertext =
-                        self.aggregate_one_hot_vector(possible_results_to_be_aggregated);
+                        self.aggregate_and_unpack_one_hot_vector(possible_results_to_be_aggregated);
                     self.cast_to_unsigned(result, num_blocks_to_represent_values)
                 },
                 || {
@@ -568,7 +572,7 @@ impl ServerKey {
                         .into_par_iter()
                         .zip(unique_clears.into_par_iter().map(|(index, _)| index as u64)),
                 );
-                self.aggregate_one_hot_vector(possible_values)
+                self.aggregate_and_unpack_one_hot_vector(possible_values)
             },
             || BooleanBlock::new_unchecked(self.is_at_least_one_comparisons_block_true(selectors2)),
         )
@@ -854,7 +858,7 @@ impl ServerKey {
                         .enumerate()
                         .map(|(i, v)| (v, i as u64)),
                 );
-                self.aggregate_one_hot_vector(possible_values)
+                self.aggregate_and_unpack_one_hot_vector(possible_values)
             },
             || BooleanBlock::new_unchecked(self.is_at_least_one_comparisons_block_true(selectors)),
         )
@@ -962,7 +966,7 @@ impl ServerKey {
                         .enumerate()
                         .map(|(i, v)| (v, i as u64)),
                 );
-                self.aggregate_one_hot_vector(possible_values)
+                self.aggregate_and_unpack_one_hot_vector(possible_values)
             },
             || BooleanBlock::new_unchecked(self.is_at_least_one_comparisons_block_true(selectors)),
         )
@@ -1052,7 +1056,7 @@ impl ServerKey {
                         .enumerate()
                         .map(|(i, v)| (v, i as u64)),
                 );
-                self.aggregate_one_hot_vector(possible_values)
+                self.aggregate_and_unpack_one_hot_vector(possible_values)
             },
             || BooleanBlock::new_unchecked(self.is_at_least_one_comparisons_block_true(selectors2)),
         )
@@ -1067,7 +1071,7 @@ impl ServerKey {
     /// otherwise it will be 0.
     ///
     /// Requires ct to have empty carries
-    fn compute_equality_selectors<T, Iter, Clear>(
+    pub(crate) fn compute_equality_selectors<T, Iter, Clear>(
         &self,
         ct: &T,
         possible_input_values: Iter,
@@ -1091,7 +1095,7 @@ impl ServerKey {
         // Contains the LUTs used to compare a block with scalar block values
         // in many LUTs format for efficiency
         let luts = {
-            let scalar_block_cmp_fns = (0..self.message_modulus().0 as u64)
+            let scalar_block_cmp_fns = (0..self.message_modulus().0)
                 .map(|msg_value| move |block: u64| u64::from(block == msg_value))
                 .collect::<Vec<_>>();
 
@@ -1157,8 +1161,7 @@ impl ServerKey {
             self.message_modulus()
         );
         // Vector of functions that returns function, that will be used to create LUTs later
-        let scalar_block_cmp_fns = (0..(self.message_modulus().0 * self.message_modulus().0)
-            as u64)
+        let scalar_block_cmp_fns = (0..(self.message_modulus().0 * self.message_modulus().0))
             .map(|packed_block_value| {
                 move |is_selected: u64| {
                     if is_selected == 1 {
@@ -1185,7 +1188,7 @@ impl ServerKey {
                 // Since there is a limit in the number of how many lut we can apply in one PBS
                 // we pre-chunk LUTs according to that amount
                 let blocks = decomposed_value
-                    .par_chunks(max_num_many_luts)
+                    .par_chunks(max_num_many_luts as usize)
                     .flat_map(|chunk_of_packed_value| {
                         let fns = chunk_of_packed_value
                             .iter()
@@ -1208,18 +1211,70 @@ impl ServerKey {
     /// (i.e. at most one of the vector element is non-zero) into single ciphertext
     /// containing the non-zero value.
     ///
-    /// The elements in the one hot vector have their block packed.
+    /// The elements in the one hot vector may have their block packed or not
     ///
     /// The returned result has non packed blocks
-    fn aggregate_one_hot_vector<T>(&self, mut one_hot_vector: Vec<T>) -> T
+    pub(super) fn aggregate_and_unpack_one_hot_vector<T>(&self, one_hot_vector: Vec<T>) -> T
+    where
+        T: IntegerRadixCiphertext,
+    {
+        let result = self.partial_aggregate_one_hot_vector(one_hot_vector);
+
+        let unpacked_blocks = result
+            .blocks()
+            .par_iter()
+            .flat_map(|block| -> [Ciphertext; 2] {
+                rayon::join(
+                    || self.key.message_extract(block),
+                    || self.key.carry_extract(block),
+                )
+                .into()
+            })
+            .collect::<Vec<_>>();
+
+        T::from_blocks(unpacked_blocks)
+    }
+
+    /// Aggregate/combines a vec of one-hot vector of radix ciphertexts
+    /// (i.e. at most one of the vector element is non-zero) into single ciphertext
+    /// containing the non-zero value.
+    ///
+    /// * The returned result has block still packed if the input blocks where packed.
+    pub(super) fn aggregate_one_hot_vector<T>(&self, one_hot_vector: Vec<T>) -> T
+    where
+        T: IntegerRadixCiphertext,
+    {
+        let mut result = self.partial_aggregate_one_hot_vector(one_hot_vector);
+
+        result
+            .blocks_mut()
+            .par_iter_mut()
+            .for_each(|block| self.key.message_extract_assign(block));
+
+        result
+    }
+
+    /// Aggregate/combines a vec of one-hot vector of radix ciphertexts
+    /// (i.e. at most one of the vector element is non-zero) into single ciphertext
+    /// containing the non-zero value.
+    ///
+    /// * The elements in the one hot vector may have their block packed or not
+    /// * The returned result has block still packed if the input blocks where packed.
+    ///
+    /// # Warning
+    ///
+    /// The returned value will need to be unpacked if the inputs where packed or
+    /// if they were not, noise cleaning may still need to be done.
+    fn partial_aggregate_one_hot_vector<T>(&self, mut one_hot_vector: Vec<T>) -> T
     where
         T: IntegerRadixCiphertext,
     {
         // Used to clean the noise
         let identity_lut = self.key.generate_lookup_table(|x| x);
 
-        let total_modulus = self.message_modulus().0 * self.carry_modulus().0;
-        let chunk_size = (total_modulus - 1) / (self.message_modulus().0 - 1);
+        // Since all but one radix are zeros, the limiting factor
+        // for additions is the noise level
+        let chunk_size = self.key.max_noise_level.get() as usize;
 
         let (num_init_chunks, num_init_rest) = (
             one_hot_vector.len() / chunk_size,
@@ -1256,18 +1311,7 @@ impl ServerKey {
             }
         }
 
-        let unpacked_blocks = result
-            .blocks()
-            .par_iter()
-            .flat_map(|block| -> [Ciphertext; 2] {
-                rayon::join(
-                    || self.key.message_extract(block),
-                    || self.key.carry_extract(block),
-                )
-                .into()
-            })
-            .collect::<Vec<_>>();
-        T::from_blocks(unpacked_blocks)
+        result
     }
 
     /// Only keeps at most one Ciphertext that encrypts 1
@@ -1320,7 +1364,7 @@ impl ServerKey {
             };
             let mut values = self.compute_prefix_sum_hillis_steele(values, sum_function);
             let lut = self.key.generate_lookup_table(|x| {
-                let x = x % self.message_modulus().0 as u64;
+                let x = x % self.message_modulus().0;
                 if x == ALREADY_SEEN {
                     0
                 } else {

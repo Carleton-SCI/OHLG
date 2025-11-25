@@ -13,7 +13,7 @@
  * as output ids, -1 value as an input id means that zero ciphertext will be
  * copied on output index.
  */
-void generate_ids_update_degrees(int *terms_degree, size_t *h_lwe_idx_in,
+void generate_ids_update_degrees(uint64_t *terms_degree, size_t *h_lwe_idx_in,
                                  size_t *h_lwe_idx_out,
                                  int32_t *h_smart_copy_in,
                                  int32_t *h_smart_copy_out, size_t ch_amount,
@@ -65,18 +65,19 @@ void generate_ids_update_degrees(int *terms_degree, size_t *h_lwe_idx_in,
  * This scratch function allocates the necessary amount of data on the GPU for
  * the integer radix multiplication in keyswitch->bootstrap order.
  */
-void scratch_cuda_integer_mult_radix_ciphertext_kb_64(
-    void **streams, uint32_t *gpu_indexes, uint32_t gpu_count, int8_t **mem_ptr,
-    uint32_t message_modulus, uint32_t carry_modulus, uint32_t glwe_dimension,
-    uint32_t lwe_dimension, uint32_t polynomial_size, uint32_t pbs_base_log,
-    uint32_t pbs_level, uint32_t ks_base_log, uint32_t ks_level,
-    uint32_t grouping_factor, uint32_t num_radix_blocks, PBS_TYPE pbs_type,
-    uint32_t max_shared_memory, bool allocate_gpu_memory) {
-
+uint64_t scratch_cuda_integer_mult_radix_ciphertext_64(
+    CudaStreamsFFI streams, int8_t **mem_ptr, bool const is_boolean_left,
+    bool const is_boolean_right, uint32_t message_modulus,
+    uint32_t carry_modulus, uint32_t glwe_dimension, uint32_t lwe_dimension,
+    uint32_t polynomial_size, uint32_t pbs_base_log, uint32_t pbs_level,
+    uint32_t ks_base_log, uint32_t ks_level, uint32_t grouping_factor,
+    uint32_t num_radix_blocks, PBS_TYPE pbs_type, bool allocate_gpu_memory,
+    PBS_MS_REDUCTION_T noise_reduction_type) {
   int_radix_params params(pbs_type, glwe_dimension, polynomial_size,
                           polynomial_size * glwe_dimension, lwe_dimension,
                           ks_level, ks_base_log, pbs_level, pbs_base_log,
-                          grouping_factor, message_modulus, carry_modulus);
+                          grouping_factor, message_modulus, carry_modulus,
+                          noise_reduction_type);
 
   switch (polynomial_size) {
   case 256:
@@ -86,11 +87,10 @@ void scratch_cuda_integer_mult_radix_ciphertext_kb_64(
   case 4096:
   case 8192:
   case 16384:
-    scratch_cuda_integer_mult_radix_ciphertext_kb<uint64_t>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        (int_mul_memory<uint64_t> **)mem_ptr, num_radix_blocks, params,
+    return scratch_cuda_integer_mult_radix_ciphertext<uint64_t>(
+        CudaStreams(streams), (int_mul_memory<uint64_t> **)mem_ptr,
+        is_boolean_left, is_boolean_right, num_radix_blocks, params,
         allocate_gpu_memory);
-    break;
   default:
     PANIC("Cuda error (integer multiplication): unsupported polynomial size. "
           "Supported N's are powers of two in the interval [256..16384].")
@@ -123,176 +123,119 @@ void scratch_cuda_integer_mult_radix_ciphertext_kb_64(
  * - 'num_blocks' is the number of big lwe ciphertext blocks inside radix
  * ciphertext
  * - 'pbs_type' selects which PBS implementation should be used
- * - 'max_shared_memory' maximum shared memory per cuda block
  */
-void cuda_integer_mult_radix_ciphertext_kb_64(
-    void **streams, uint32_t *gpu_indexes, uint32_t gpu_count,
-    void *radix_lwe_out, void *radix_lwe_left, void *radix_lwe_right,
-    void **bsks, void **ksks, int8_t *mem_ptr, uint32_t polynomial_size,
-    uint32_t num_blocks) {
-
+void cuda_integer_mult_radix_ciphertext_64(
+    CudaStreamsFFI streams, CudaRadixCiphertextFFI *radix_lwe_out,
+    CudaRadixCiphertextFFI const *radix_lwe_left, bool const is_bool_left,
+    CudaRadixCiphertextFFI const *radix_lwe_right, bool const is_bool_right,
+    void *const *bsks, void *const *ksks, int8_t *mem_ptr,
+    uint32_t polynomial_size, uint32_t num_blocks) {
+  PUSH_RANGE("mul")
   switch (polynomial_size) {
   case 256:
-    host_integer_mult_radix_kb<uint64_t, int64_t, AmortizedDegree<256>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_left),
-        static_cast<uint64_t *>(radix_lwe_right), bsks, (uint64_t **)(ksks),
+    host_integer_mult_radix<uint64_t, AmortizedDegree<256>>(
+        CudaStreams(streams), radix_lwe_out, radix_lwe_left, is_bool_left,
+        radix_lwe_right, is_bool_right, bsks, (uint64_t **)(ksks),
         (int_mul_memory<uint64_t> *)mem_ptr, num_blocks);
     break;
   case 512:
-    host_integer_mult_radix_kb<uint64_t, int64_t, AmortizedDegree<512>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_left),
-        static_cast<uint64_t *>(radix_lwe_right), bsks, (uint64_t **)(ksks),
+    host_integer_mult_radix<uint64_t, AmortizedDegree<512>>(
+        CudaStreams(streams), radix_lwe_out, radix_lwe_left, is_bool_left,
+        radix_lwe_right, is_bool_right, bsks, (uint64_t **)(ksks),
         (int_mul_memory<uint64_t> *)mem_ptr, num_blocks);
     break;
   case 1024:
-    host_integer_mult_radix_kb<uint64_t, int64_t, AmortizedDegree<1024>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_left),
-        static_cast<uint64_t *>(radix_lwe_right), bsks, (uint64_t **)(ksks),
+    host_integer_mult_radix<uint64_t, AmortizedDegree<1024>>(
+        CudaStreams(streams), radix_lwe_out, radix_lwe_left, is_bool_left,
+        radix_lwe_right, is_bool_right, bsks, (uint64_t **)(ksks),
         (int_mul_memory<uint64_t> *)mem_ptr, num_blocks);
     break;
   case 2048:
-    host_integer_mult_radix_kb<uint64_t, int64_t, AmortizedDegree<2048>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_left),
-        static_cast<uint64_t *>(radix_lwe_right), bsks, (uint64_t **)(ksks),
+    host_integer_mult_radix<uint64_t, AmortizedDegree<2048>>(
+        CudaStreams(streams), radix_lwe_out, radix_lwe_left, is_bool_left,
+        radix_lwe_right, is_bool_right, bsks, (uint64_t **)(ksks),
         (int_mul_memory<uint64_t> *)mem_ptr, num_blocks);
     break;
   case 4096:
-    host_integer_mult_radix_kb<uint64_t, int64_t, AmortizedDegree<4096>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_left),
-        static_cast<uint64_t *>(radix_lwe_right), bsks, (uint64_t **)(ksks),
+    host_integer_mult_radix<uint64_t, AmortizedDegree<4096>>(
+        CudaStreams(streams), radix_lwe_out, radix_lwe_left, is_bool_left,
+        radix_lwe_right, is_bool_right, bsks, (uint64_t **)(ksks),
         (int_mul_memory<uint64_t> *)mem_ptr, num_blocks);
     break;
   case 8192:
-    host_integer_mult_radix_kb<uint64_t, int64_t, AmortizedDegree<8192>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_left),
-        static_cast<uint64_t *>(radix_lwe_right), bsks, (uint64_t **)(ksks),
+    host_integer_mult_radix<uint64_t, AmortizedDegree<8192>>(
+        CudaStreams(streams), radix_lwe_out, radix_lwe_left, is_bool_left,
+        radix_lwe_right, is_bool_right, bsks, (uint64_t **)(ksks),
         (int_mul_memory<uint64_t> *)mem_ptr, num_blocks);
     break;
   case 16384:
-    host_integer_mult_radix_kb<uint64_t, int64_t, AmortizedDegree<16384>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_left),
-        static_cast<uint64_t *>(radix_lwe_right), bsks, (uint64_t **)(ksks),
+    host_integer_mult_radix<uint64_t, AmortizedDegree<16384>>(
+        CudaStreams(streams), radix_lwe_out, radix_lwe_left, is_bool_left,
+        radix_lwe_right, is_bool_right, bsks, (uint64_t **)(ksks),
         (int_mul_memory<uint64_t> *)mem_ptr, num_blocks);
     break;
   default:
     PANIC("Cuda error (integer multiplication): unsupported polynomial size. "
           "Supported N's are powers of two in the interval [256..16384].")
   }
+  POP_RANGE()
 }
 
-void cleanup_cuda_integer_mult(void **streams, uint32_t *gpu_indexes,
-                               uint32_t gpu_count, int8_t **mem_ptr_void) {
-
+void cleanup_cuda_integer_mult(CudaStreamsFFI streams, int8_t **mem_ptr_void) {
+  PUSH_RANGE("cleanup mul")
   int_mul_memory<uint64_t> *mem_ptr =
       (int_mul_memory<uint64_t> *)(*mem_ptr_void);
 
-  mem_ptr->release((cudaStream_t *)(streams), gpu_indexes, gpu_count);
+  mem_ptr->release(CudaStreams(streams));
+  delete mem_ptr;
+  *mem_ptr_void = nullptr;
+  POP_RANGE()
 }
 
-void scratch_cuda_integer_radix_sum_ciphertexts_vec_kb_64(
-    void **streams, uint32_t *gpu_indexes, uint32_t gpu_count, int8_t **mem_ptr,
-    uint32_t glwe_dimension, uint32_t polynomial_size, uint32_t lwe_dimension,
-    uint32_t ks_level, uint32_t ks_base_log, uint32_t pbs_level,
-    uint32_t pbs_base_log, uint32_t grouping_factor,
-    uint32_t num_blocks_in_radix, uint32_t max_num_radix_in_vec,
-    uint32_t message_modulus, uint32_t carry_modulus, PBS_TYPE pbs_type,
-    bool allocate_gpu_memory) {
+uint64_t scratch_cuda_partial_sum_ciphertexts_vec_64(
+    CudaStreamsFFI streams, int8_t **mem_ptr, uint32_t glwe_dimension,
+    uint32_t polynomial_size, uint32_t lwe_dimension, uint32_t ks_level,
+    uint32_t ks_base_log, uint32_t pbs_level, uint32_t pbs_base_log,
+    uint32_t grouping_factor, uint32_t num_blocks_in_radix,
+    uint32_t max_num_radix_in_vec, uint32_t message_modulus,
+    uint32_t carry_modulus, PBS_TYPE pbs_type,
+    bool reduce_degrees_for_single_carry_propagation, bool allocate_gpu_memory,
+    PBS_MS_REDUCTION_T noise_reduction_type) {
 
   int_radix_params params(pbs_type, glwe_dimension, polynomial_size,
                           glwe_dimension * polynomial_size, lwe_dimension,
                           ks_level, ks_base_log, pbs_level, pbs_base_log,
-                          grouping_factor, message_modulus, carry_modulus);
-  scratch_cuda_integer_sum_ciphertexts_vec_kb<uint64_t>(
-      (cudaStream_t *)(streams), gpu_indexes, gpu_count,
+                          grouping_factor, message_modulus, carry_modulus,
+                          noise_reduction_type);
+  return scratch_cuda_integer_partial_sum_ciphertexts_vec<uint64_t>(
+      CudaStreams(streams),
       (int_sum_ciphertexts_vec_memory<uint64_t> **)mem_ptr, num_blocks_in_radix,
-      max_num_radix_in_vec, params, allocate_gpu_memory);
+      max_num_radix_in_vec, reduce_degrees_for_single_carry_propagation, params,
+      allocate_gpu_memory);
 }
 
-void cuda_integer_radix_sum_ciphertexts_vec_kb_64(
-    void **streams, uint32_t *gpu_indexes, uint32_t gpu_count,
-    void *radix_lwe_out, void *radix_lwe_vec, uint32_t num_radix_in_vec,
-    int8_t *mem_ptr, void **bsks, void **ksks, uint32_t num_blocks_in_radix) {
+void cuda_partial_sum_ciphertexts_vec_64(CudaStreamsFFI streams,
+                                         CudaRadixCiphertextFFI *radix_lwe_out,
+                                         CudaRadixCiphertextFFI *radix_lwe_vec,
+                                         int8_t *mem_ptr, void *const *bsks,
+                                         void *const *ksks) {
 
   auto mem = (int_sum_ciphertexts_vec_memory<uint64_t> *)mem_ptr;
-
-  int *terms_degree =
-      (int *)malloc(num_blocks_in_radix * num_radix_in_vec * sizeof(int));
-
-  for (int i = 0; i < num_radix_in_vec * num_blocks_in_radix; i++) {
-    terms_degree[i] = mem->params.message_modulus - 1;
-  }
-
-  switch (mem->params.polynomial_size) {
-  case 512:
-    host_integer_sum_ciphertexts_vec_kb<uint64_t, AmortizedDegree<512>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_vec), terms_degree, bsks,
-        (uint64_t **)(ksks), mem, num_blocks_in_radix, num_radix_in_vec);
-    break;
-  case 1024:
-    host_integer_sum_ciphertexts_vec_kb<uint64_t, AmortizedDegree<1024>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_vec), terms_degree, bsks,
-        (uint64_t **)(ksks), mem, num_blocks_in_radix, num_radix_in_vec);
-    break;
-  case 2048:
-    host_integer_sum_ciphertexts_vec_kb<uint64_t, AmortizedDegree<2048>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_vec), terms_degree, bsks,
-        (uint64_t **)(ksks), mem, num_blocks_in_radix, num_radix_in_vec);
-    break;
-  case 4096:
-    host_integer_sum_ciphertexts_vec_kb<uint64_t, AmortizedDegree<4096>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_vec), terms_degree, bsks,
-        (uint64_t **)(ksks), mem, num_blocks_in_radix, num_radix_in_vec);
-    break;
-  case 8192:
-    host_integer_sum_ciphertexts_vec_kb<uint64_t, AmortizedDegree<8192>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_vec), terms_degree, bsks,
-        (uint64_t **)(ksks), mem, num_blocks_in_radix, num_radix_in_vec);
-    break;
-  case 16384:
-    host_integer_sum_ciphertexts_vec_kb<uint64_t, AmortizedDegree<16384>>(
-        (cudaStream_t *)(streams), gpu_indexes, gpu_count,
-        static_cast<uint64_t *>(radix_lwe_out),
-        static_cast<uint64_t *>(radix_lwe_vec), terms_degree, bsks,
-        (uint64_t **)(ksks), mem, num_blocks_in_radix, num_radix_in_vec);
-    break;
-  default:
-    PANIC("Cuda error (integer multiplication): unsupported polynomial size. "
-          "Supported N's are powers of two in the interval [256..16384].")
-  }
-
-  free(terms_degree);
+  if (radix_lwe_vec->num_radix_blocks % radix_lwe_out->num_radix_blocks != 0)
+    PANIC("Cuda error: input vector length should be a multiple of the "
+          "output's number of radix blocks")
+  host_integer_partial_sum_ciphertexts_vec<uint64_t>(
+      CudaStreams(streams), radix_lwe_out, radix_lwe_vec, bsks,
+      (uint64_t **)(ksks), mem, radix_lwe_out->num_radix_blocks,
+      radix_lwe_vec->num_radix_blocks / radix_lwe_out->num_radix_blocks);
 }
 
-void cleanup_cuda_integer_radix_sum_ciphertexts_vec(void **streams,
-                                                    uint32_t *gpu_indexes,
-                                                    uint32_t gpu_count,
-                                                    int8_t **mem_ptr_void) {
+void cleanup_cuda_partial_sum_ciphertexts_vec(CudaStreamsFFI streams,
+                                              int8_t **mem_ptr_void) {
   int_sum_ciphertexts_vec_memory<uint64_t> *mem_ptr =
       (int_sum_ciphertexts_vec_memory<uint64_t> *)(*mem_ptr_void);
 
-  mem_ptr->release((cudaStream_t *)(streams), gpu_indexes, gpu_count);
+  mem_ptr->release(CudaStreams(streams));
+  delete mem_ptr;
+  *mem_ptr_void = nullptr;
 }

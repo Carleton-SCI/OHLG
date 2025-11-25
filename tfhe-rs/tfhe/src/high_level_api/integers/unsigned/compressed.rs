@@ -9,7 +9,8 @@ use crate::high_level_api::global_state::with_cpu_internal_keys;
 use crate::high_level_api::integers::unsigned::base::{
     FheUint, FheUintConformanceParams, FheUintId,
 };
-use crate::high_level_api::traits::FheTryEncrypt;
+use crate::high_level_api::re_randomization::ReRandomizationMetadata;
+use crate::high_level_api::traits::{FheTryEncrypt, Tagged};
 use crate::high_level_api::ClientKey;
 use crate::integer::block_decomposition::DecomposableInto;
 use crate::integer::ciphertext::{
@@ -18,6 +19,7 @@ use crate::integer::ciphertext::{
 };
 use crate::integer::parameters::RadixCiphertextConformanceParams;
 use crate::named::Named;
+use crate::Tag;
 
 /// Compressed [FheUint]
 ///
@@ -49,26 +51,49 @@ where
 {
     pub(in crate::high_level_api::integers) ciphertext: CompressedRadixCiphertext,
     pub(in crate::high_level_api::integers) id: Id,
+    pub(crate) tag: Tag,
+}
+
+impl<Id> Tagged for CompressedFheUint<Id>
+where
+    Id: FheUintId,
+{
+    fn tag(&self) -> &Tag {
+        &self.tag
+    }
+
+    fn tag_mut(&mut self) -> &mut Tag {
+        &mut self.tag
+    }
 }
 
 impl<Id> CompressedFheUint<Id>
 where
     Id: FheUintId,
 {
-    pub(in crate::high_level_api::integers) fn new(inner: CompressedRadixCiphertext) -> Self {
+    pub(in crate::high_level_api) fn new(inner: CompressedRadixCiphertext, tag: Tag) -> Self {
         Self {
             ciphertext: inner,
             id: Id::default(),
+            tag,
         }
     }
 
-    pub fn into_raw_parts(self) -> (CompressedRadixCiphertext, Id) {
-        let Self { ciphertext, id } = self;
-        (ciphertext, id)
+    pub fn into_raw_parts(self) -> (CompressedRadixCiphertext, Id, Tag) {
+        let Self {
+            ciphertext,
+            id,
+            tag,
+        } = self;
+        (ciphertext, id, tag)
     }
 
-    pub fn from_raw_parts(ciphertext: CompressedRadixCiphertext, id: Id) -> Self {
-        Self { ciphertext, id }
+    pub fn from_raw_parts(ciphertext: CompressedRadixCiphertext, id: Id, tag: Tag) -> Self {
+        Self {
+            ciphertext,
+            id,
+            tag,
+        }
     }
 }
 
@@ -80,12 +105,15 @@ where
     ///
     /// See [CompressedFheUint] example.
     pub fn decompress(&self) -> FheUint<Id> {
-        let mut ciphertext = FheUint::new(match &self.ciphertext {
+        let inner = match &self.ciphertext {
             CompressedRadixCiphertext::Seeded(ct) => ct.decompress(),
             CompressedRadixCiphertext::ModulusSwitched(ct) => {
-                with_cpu_internal_keys(|sk| sk.key.decompress_parallelized(ct))
+                with_cpu_internal_keys(|sk| sk.pbs_key().decompress_parallelized(ct))
             }
-        });
+        };
+
+        let mut ciphertext =
+            FheUint::new(inner, self.tag.clone(), ReRandomizationMetadata::default());
 
         ciphertext.move_to_device_of_server_key_if_set();
         ciphertext
@@ -104,7 +132,10 @@ where
             .key
             .key
             .encrypt_radix_compressed(value, Id::num_blocks(key.message_modulus()));
-        Ok(Self::new(CompressedRadixCiphertext::Seeded(inner)))
+        Ok(Self::new(
+            CompressedRadixCiphertext::Seeded(inner),
+            key.tag.clone(),
+        ))
     }
 }
 
@@ -112,7 +143,13 @@ impl<Id: FheUintId> ParameterSetConformant for CompressedFheUint<Id> {
     type ParameterSet = FheUintConformanceParams<Id>;
 
     fn is_conformant(&self, params: &FheUintConformanceParams<Id>) -> bool {
-        self.ciphertext.is_conformant(&params.params)
+        let Self {
+            ciphertext,
+            id: _,
+            tag: _,
+        } = self;
+
+        ciphertext.is_conformant(&params.params)
     }
 }
 
@@ -142,12 +179,11 @@ where
     Id: FheUintId,
 {
     pub fn compress(&self) -> CompressedFheUint<Id> {
-        CompressedFheUint::new(CompressedRadixCiphertext::ModulusSwitched(
-            with_cpu_internal_keys(|sk| {
-                sk.key
-                    .switch_modulus_and_compress_parallelized(&self.ciphertext.on_cpu())
-            }),
-        ))
+        let ciphertext = CompressedRadixCiphertext::ModulusSwitched(with_cpu_internal_keys(|sk| {
+            sk.pbs_key()
+                .switch_modulus_and_compress_parallelized(&self.ciphertext.on_cpu())
+        }));
+        CompressedFheUint::new(ciphertext, self.tag.clone())
     }
 }
 
@@ -155,7 +191,7 @@ where
 mod test {
     use super::*;
     use crate::core_crypto::prelude::UnsignedInteger;
-    use crate::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    use crate::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128;
     use crate::shortint::{CiphertextModulus, CompressedCiphertext};
     use crate::{generate_keys, set_server_key, CompressedFheUint8, ConfigBuilder};
     use rand::{thread_rng, Rng};
@@ -207,7 +243,7 @@ mod test {
         let ct = CompressedFheUint8::try_encrypt(0_u64, &client_key).unwrap();
 
         assert!(ct.is_conformant(&FheUintConformanceParams::from(
-            PARAM_MESSAGE_2_CARRY_2_KS_PBS
+            PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128
         )));
 
         let breaker_lists = [
@@ -231,7 +267,7 @@ mod test {
                     breaker(i, &mut ct_clone);
 
                     assert!(!ct_clone.is_conformant(&FheUintConformanceParams::from(
-                        PARAM_MESSAGE_2_CARRY_2_KS_PBS
+                        PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128
                     )));
                 }
             }
@@ -262,7 +298,7 @@ mod test {
                 breaker(i, &mut ct_clone);
 
                 assert!(!ct_clone.is_conformant(&FheUintConformanceParams::from(
-                    PARAM_MESSAGE_2_CARRY_2_KS_PBS
+                    PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128
                 )));
             }
         }
@@ -279,7 +315,7 @@ mod test {
         let ct = CompressedFheUint8::try_encrypt(0_u64, &client_key).unwrap();
 
         assert!(ct.is_conformant(&FheUintConformanceParams::from(
-            PARAM_MESSAGE_2_CARRY_2_KS_PBS
+            PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128
         )));
 
         let mut rng = thread_rng();
@@ -299,7 +335,7 @@ mod test {
                     .0 = rng.gen::<u128>();
             }
             assert!(ct_clone.is_conformant(&FheUintConformanceParams::from(
-                PARAM_MESSAGE_2_CARRY_2_KS_PBS
+                PARAM_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128
             )));
 
             let mut ct_clone_decompressed = ct_clone.decompress();

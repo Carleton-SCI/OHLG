@@ -15,7 +15,7 @@ use crate::core_crypto::prelude::*;
 /// use tfhe::core_crypto::fft_impl::common::modulus_switch;
 /// use tfhe::core_crypto::prelude::compressed_modulus_switched_glwe_ciphertext::CompressedModulusSwitchedGlweCiphertext;
 /// use tfhe::core_crypto::prelude::*;
-/// use concrete_csprng::seeders::Seed;
+/// use tfhe_csprng::seeders::Seed;
 ///
 /// let log_modulus = 12;
 ///
@@ -25,7 +25,7 @@ use crate::core_crypto::prelude::*;
 ///     Gaussian::from_dispersion_parameter(StandardDev(0.00000000000000029403601535432533), 0.0);
 /// let ciphertext_modulus = CiphertextModulus::new_native();
 ///
-/// let mut secret_generator = SecretRandomGenerator::<ActivatedRandomGenerator>::new(Seed(0));
+/// let mut secret_generator = SecretRandomGenerator::<DefaultRandomGenerator>::new(Seed(0));
 ///
 /// let glwe_secret_key = allocate_and_generate_new_binary_glwe_secret_key::<u64, _>(
 ///     glwe_size.to_glwe_dimension(),
@@ -37,7 +37,7 @@ use crate::core_crypto::prelude::*;
 /// let seeder = seeder.as_mut();
 ///
 /// let mut encryption_generator =
-///     EncryptionRandomGenerator::<ActivatedRandomGenerator>::new(seeder.seed(), seeder);
+///     EncryptionRandomGenerator::<DefaultRandomGenerator>::new(seeder.seed(), seeder);
 ///
 /// let inputs = [1 << 57, 1 << 58];
 ///
@@ -77,7 +77,7 @@ use crate::core_crypto::prelude::*;
 ///     );
 /// }
 /// ```
-#[derive(Clone, serde::Serialize, serde::Deserialize, Versionize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, Versionize)]
 #[versionize(CompressedModulusSwitchedGlweCiphertextVersions)]
 pub struct CompressedModulusSwitchedGlweCiphertext<Scalar: UnsignedInteger> {
     packed_integers: PackedIntegers<Scalar>,
@@ -87,7 +87,66 @@ pub struct CompressedModulusSwitchedGlweCiphertext<Scalar: UnsignedInteger> {
     uncompressed_ciphertext_modulus: CiphertextModulus<Scalar>,
 }
 
-impl<Scalar: UnsignedTorus> CompressedModulusSwitchedGlweCiphertext<Scalar> {
+impl<Scalar: UnsignedInteger> CompressedModulusSwitchedGlweCiphertext<Scalar> {
+    pub fn from_raw_parts(
+        packed_integers: PackedIntegers<Scalar>,
+        glwe_dimension: GlweDimension,
+        polynomial_size: PolynomialSize,
+        bodies_count: LweCiphertextCount,
+        uncompressed_ciphertext_modulus: CiphertextModulus<Scalar>,
+    ) -> Self {
+        assert_eq!(
+            glwe_dimension.0 * polynomial_size.0 + bodies_count.0,
+            packed_integers.initial_len(),
+            "Packed integers list is not of the correct size for the uncompressed GLWE: expected {}, got {}",
+            glwe_dimension.0 * polynomial_size.0 + bodies_count.0,
+            packed_integers.initial_len(),
+        );
+
+        assert!(
+            packed_integers.log_modulus().0
+                <= CiphertextModulusLog::from(uncompressed_ciphertext_modulus).0,
+            "Compressed modulus (={}) should be smaller than the uncompressed modulus (={})",
+            packed_integers.log_modulus().0,
+            CiphertextModulusLog::from(uncompressed_ciphertext_modulus).0,
+        );
+
+        Self {
+            packed_integers,
+            glwe_dimension,
+            polynomial_size,
+            bodies_count,
+            uncompressed_ciphertext_modulus,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_raw_parts(
+        self,
+    ) -> (
+        PackedIntegers<Scalar>,
+        GlweDimension,
+        PolynomialSize,
+        LweCiphertextCount,
+        CiphertextModulus<Scalar>,
+    ) {
+        let Self {
+            packed_integers,
+            glwe_dimension,
+            polynomial_size,
+            bodies_count,
+            uncompressed_ciphertext_modulus,
+        } = self;
+
+        (
+            packed_integers,
+            glwe_dimension,
+            polynomial_size,
+            bodies_count,
+            uncompressed_ciphertext_modulus,
+        )
+    }
+
     pub fn glwe_dimension(&self) -> GlweDimension {
         self.glwe_dimension
     }
@@ -101,6 +160,10 @@ impl<Scalar: UnsignedTorus> CompressedModulusSwitchedGlweCiphertext<Scalar> {
         self.uncompressed_ciphertext_modulus
     }
 
+    pub fn packed_integers(&self) -> &PackedIntegers<Scalar> {
+        &self.packed_integers
+    }
+
     /// Compresses a ciphertext by reducing its modulus
     /// This operation adds a lot of noise
     pub fn compress<Cont: Container<Element = Scalar>>(
@@ -112,7 +175,7 @@ impl<Scalar: UnsignedTorus> CompressedModulusSwitchedGlweCiphertext<Scalar> {
 
         assert!(
             ct.ciphertext_modulus().is_power_of_two(),
-            "Modulus switch compression doe not support non power of 2 input moduli",
+            "Modulus switch compression does not support non power of 2 input moduli",
         );
 
         let uncompressed_ciphertext_modulus_log =
@@ -159,8 +222,9 @@ impl<Scalar: UnsignedTorus> CompressedModulusSwitchedGlweCiphertext<Scalar> {
     /// Converts back a compressed ciphertext to its initial modulus
     /// The noise added during the compression stays in the output
     /// The output must got through a PBS to reduce the noise
+    // TODO: refactor so output is hardcoded msed type
     pub fn extract(&self) -> GlweCiphertextOwned<Scalar> {
-        let log_modulus = self.packed_integers.log_modulus.0;
+        let log_modulus = self.packed_integers.log_modulus().0;
 
         let number_bits_to_unpack =
             (self.glwe_dimension.0 * self.polynomial_size.0 + self.bodies_count.0) * log_modulus;
@@ -168,19 +232,20 @@ impl<Scalar: UnsignedTorus> CompressedModulusSwitchedGlweCiphertext<Scalar> {
         let len: usize = number_bits_to_unpack.div_ceil(Scalar::BITS);
 
         assert_eq!(
-            self.packed_integers.packed_coeffs.len(), len,
+            self.packed_integers.packed_coeffs().len(), len,
             "Mismatch between actual(={}) and maximal(={len}) CompressedModulusSwitchedGlweCiphertext packed_coeffs size",
-            self.packed_integers.packed_coeffs.len(),
+            self.packed_integers.packed_coeffs().len(),
         );
 
         let container = self
             .packed_integers
-            .unpack()
+            .unpack::<Scalar>()
             // Scaling
             .map(|a| a << (Scalar::BITS - log_modulus))
-            .chain(
-                std::iter::repeat(Scalar::ZERO).take(self.polynomial_size.0 - self.bodies_count.0),
-            )
+            .chain(std::iter::repeat_n(
+                Scalar::ZERO,
+                self.polynomial_size.0 - self.bodies_count.0,
+            ))
             .collect();
 
         GlweCiphertextOwned::from_container(
@@ -194,31 +259,36 @@ impl<Scalar: UnsignedTorus> CompressedModulusSwitchedGlweCiphertext<Scalar> {
 impl<Scalar: UnsignedInteger> ParameterSetConformant
     for CompressedModulusSwitchedGlweCiphertext<Scalar>
 {
-    type ParameterSet = GlweCiphertextConformanceParameters<Scalar>;
+    type ParameterSet = GlweCiphertextConformanceParams<Scalar>;
 
-    fn is_conformant(
-        &self,
-        lwe_ct_parameters: &GlweCiphertextConformanceParameters<Scalar>,
-    ) -> bool {
-        let log_modulus = self.packed_integers.log_modulus.0;
+    fn is_conformant(&self, lwe_ct_parameters: &GlweCiphertextConformanceParams<Scalar>) -> bool {
+        let Self {
+            packed_integers,
+            glwe_dimension,
+            polynomial_size,
+            bodies_count,
+            uncompressed_ciphertext_modulus,
+        } = self;
+        let log_modulus = packed_integers.log_modulus().0;
 
         let number_bits_to_unpack =
-            (self.glwe_dimension.0 * self.polynomial_size.0 + self.bodies_count.0) * log_modulus;
+            (glwe_dimension.0 * polynomial_size.0 + bodies_count.0) * log_modulus;
 
         let len = number_bits_to_unpack.div_ceil(Scalar::BITS);
 
-        self.packed_integers.packed_coeffs.len() == len
-            && self.glwe_dimension == lwe_ct_parameters.glwe_dim
-            && self.polynomial_size == lwe_ct_parameters.polynomial_size
+        packed_integers.packed_coeffs().len() == len
+            && *glwe_dimension == lwe_ct_parameters.glwe_dim
+            && *polynomial_size == lwe_ct_parameters.polynomial_size
             && lwe_ct_parameters.ct_modulus.is_power_of_two()
-            && self.uncompressed_ciphertext_modulus == lwe_ct_parameters.ct_modulus
+            && *uncompressed_ciphertext_modulus == lwe_ct_parameters.ct_modulus
     }
 }
 
 #[cfg(test)]
 mod test {
+    use rand::{Fill, Rng};
+
     use super::*;
-    use crate::core_crypto::prelude::test::TestResources;
 
     #[test]
     fn glwe_ms_compression_() {
@@ -243,17 +313,20 @@ mod test {
         glwe_dimension: GlweDimension,
         polynomial_size: PolynomialSize,
         bodies_count: usize,
-    ) {
-        let mut rsc: TestResources = TestResources::new();
-
+    ) where
+        [Scalar]: Fill,
+    {
         let ciphertext_modulus = CiphertextModulus::new_native();
 
-        let mut glwe = vec![Scalar::ZERO; (glwe_dimension.0 + 1) * polynomial_size.0];
+        let mut glwe = GlweCiphertext::new(
+            Scalar::ZERO,
+            glwe_dimension.to_glwe_size(),
+            polynomial_size,
+            ciphertext_modulus,
+        );
 
-        rsc.encryption_random_generator
-            .fill_slice_with_random_uniform_mask(&mut glwe);
-
-        let glwe = GlweCiphertextOwned::from_container(glwe, polynomial_size, ciphertext_modulus);
+        // We don't care about the exact content here
+        rand::thread_rng().fill(glwe.as_mut());
 
         let compressed = CompressedModulusSwitchedGlweCiphertext::compress(
             &glwe,
@@ -277,6 +350,65 @@ mod test {
 
             assert_eq!(
                 output >> (Scalar::BITS - log_modulus),
+                modulus_switch(glwe[i], CiphertextModulusLog(log_modulus))
+            )
+        }
+    }
+
+    #[test]
+    fn test_from_raw_parts() {
+        type Scalar = u64;
+
+        let ciphertext_modulus = CiphertextModulus::new_native();
+        let glwe_dimension = GlweDimension(1);
+        let polynomial_size = PolynomialSize(512);
+        let bodies_count = LweCiphertextCount(512);
+        let log_modulus = 12;
+
+        let mut glwe = GlweCiphertext::new(
+            Scalar::ZERO,
+            glwe_dimension.to_glwe_size(),
+            polynomial_size,
+            ciphertext_modulus,
+        );
+
+        // We don't care about the exact content here
+        rand::thread_rng().fill(glwe.as_mut());
+
+        let compressed = CompressedModulusSwitchedGlweCiphertext::compress(
+            &glwe,
+            CiphertextModulusLog(log_modulus),
+            bodies_count,
+        );
+
+        let (
+            packed_integers,
+            glwe_dimension,
+            polynomial_size,
+            bodies_count,
+            uncompressed_ciphertext_modulus,
+        ) = compressed.into_raw_parts();
+
+        let rebuilt = CompressedModulusSwitchedGlweCiphertext::from_raw_parts(
+            packed_integers,
+            glwe_dimension,
+            polynomial_size,
+            bodies_count,
+            uncompressed_ciphertext_modulus,
+        );
+
+        let glwe_ms_ed = rebuilt.extract().into_container();
+        let glwe = glwe.into_container();
+
+        for (i, output) in glwe_ms_ed.into_iter().enumerate() {
+            assert_eq!(
+                output,
+                (output >> (Scalar::BITS as usize - log_modulus))
+                    << (Scalar::BITS as usize - log_modulus),
+            );
+
+            assert_eq!(
+                output >> (Scalar::BITS as usize - log_modulus),
                 modulus_switch(glwe[i], CiphertextModulusLog(log_modulus))
             )
         }

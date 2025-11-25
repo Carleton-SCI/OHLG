@@ -5,7 +5,7 @@ use tfhe_versionable::Versionize;
 use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::algorithms::*;
 use crate::core_crypto::backward_compatibility::entities::seeded_lwe_ciphertext::SeededLweCiphertextVersions;
-use crate::core_crypto::commons::math::random::{ActivatedRandomGenerator, CompressionSeed};
+use crate::core_crypto::commons::math::random::{CompressionSeed, DefaultRandomGenerator};
 use crate::core_crypto::commons::parameters::*;
 use crate::core_crypto::commons::traits::*;
 use crate::core_crypto::entities::*;
@@ -22,14 +22,21 @@ pub struct SeededLweCiphertext<Scalar: UnsignedInteger> {
 }
 
 impl<T: UnsignedInteger> ParameterSetConformant for SeededLweCiphertext<T> {
-    type ParameterSet = LweCiphertextParameters<T>;
+    type ParameterSet = LweCiphertextConformanceParams<T>;
 
-    fn is_conformant(&self, lwe_ct_parameters: &LweCiphertextParameters<T>) -> bool {
+    fn is_conformant(&self, lwe_ct_parameters: &LweCiphertextConformanceParams<T>) -> bool {
+        let Self {
+            data,
+            lwe_size,
+            compression_seed: _,
+            ciphertext_modulus,
+        } = self;
+
         check_encrypted_content_respects_mod::<T, &[T]>(
-            &std::slice::from_ref(self.get_body().data),
+            &std::slice::from_ref(data),
             lwe_ct_parameters.ct_modulus,
-        ) && self.lwe_size == lwe_ct_parameters.lwe_dim.to_lwe_size()
-            && self.ciphertext_modulus() == lwe_ct_parameters.ct_modulus
+        ) && *lwe_size == lwe_ct_parameters.lwe_dim.to_lwe_size()
+            && *ciphertext_modulus == lwe_ct_parameters.ct_modulus
     }
 }
 
@@ -82,7 +89,7 @@ impl<Scalar: UnsignedInteger> SeededLweCiphertext<Scalar> {
     /// let seeder = seeder.as_mut();
     ///
     /// // Create a new SeededLweCiphertext
-    /// let mut seeded_lwe = SeededLweCiphertext::new(
+    /// let seeded_lwe = SeededLweCiphertext::new(
     ///     0u64,
     ///     lwe_dimension.to_lwe_size(),
     ///     seeder.seed().into(),
@@ -166,7 +173,7 @@ impl<Scalar: UnsignedInteger> SeededLweCiphertext<Scalar> {
     {
         let mut decompressed_ct =
             LweCiphertext::new(Scalar::ZERO, self.lwe_size(), self.ciphertext_modulus());
-        decompress_seeded_lwe_ciphertext::<_, _, ActivatedRandomGenerator>(
+        decompress_seeded_lwe_ciphertext::<_, _, DefaultRandomGenerator>(
             &mut decompressed_ct,
             &self,
         );

@@ -6,7 +6,7 @@ pub(crate) mod noise_random_generator;
 mod test;
 
 use crate::core_crypto::commons::math::random::{
-    ByteRandomGenerator, Distribution, ParallelByteRandomGenerator, RandomGenerable, Seed, Seeder,
+    ByteRandomGenerator, Distribution, ParallelByteRandomGenerator, RandomGenerable, Seeder,
     Uniform,
 };
 use crate::core_crypto::commons::numeric::UnsignedInteger;
@@ -14,10 +14,11 @@ use crate::core_crypto::commons::parameters::{
     CiphertextModulus, EncryptionMaskByteCount, EncryptionMaskSampleCount,
     EncryptionNoiseByteCount, EncryptionNoiseSampleCount,
 };
-use concrete_csprng::generators::ForkError;
 use mask_random_generator::{MaskRandomGenerator, MaskRandomGeneratorForkConfig};
 use noise_random_generator::{NoiseRandomGenerator, NoiseRandomGeneratorForkConfig};
 use rayon::prelude::*;
+use tfhe_csprng::generators::ForkError;
+use tfhe_csprng::seeders::SeedKind;
 
 pub const PER_SAMPLE_TARGET_FAILURE_PROBABILITY_LOG2: f64 = -128.;
 
@@ -95,19 +96,39 @@ pub struct EncryptionRandomGenerator<G: ByteRandomGenerator> {
 }
 
 impl<G: ByteRandomGenerator> EncryptionRandomGenerator<G> {
-    /// Create a new [`EncryptionRandomGenerator`], using the provided [`Seed`] to seed the public
-    /// mask generator and using the provided [`Seeder`] to privately seed the noise generator.
+    /// Create a new [`EncryptionRandomGenerator`], using the provided [`Seed`] or [`XofSeed`]
+    /// to seed the public mask generator and using the provided [`Seeder`] to privately seed the
+    /// noise generator.
+    ///
+    /// [`Seed`]: crate::core_crypto::commons::math::random::Seed
+    /// [`XofSeed`]: crate::core_crypto::commons::math::random::XofSeed
     // S is ?Sized to allow Box<dyn Seeder> to be passed.
-    pub fn new<S: Seeder + ?Sized>(seed: Seed, seeder: &mut S) -> Self {
+    pub fn new<S: Seeder + ?Sized>(seed: impl Into<SeedKind>, seeder: &mut S) -> Self {
         Self {
             mask: MaskRandomGenerator::new(seed),
             noise: NoiseRandomGenerator::new(seeder),
         }
     }
 
+    #[cfg(all(feature = "integer", test))]
+    pub(crate) fn from_raw_parts(
+        mask: MaskRandomGenerator<G>,
+        noise: NoiseRandomGenerator<G>,
+    ) -> Self {
+        Self { mask, noise }
+    }
+
     /// Return the number of remaining bytes for the mask generator, if the generator is bounded.
     pub fn remaining_bytes(&self) -> Option<usize> {
         self.mask.remaining_bytes()
+    }
+
+    pub fn noise_generator_mut(&mut self) -> &mut NoiseRandomGenerator<G> {
+        &mut self.noise
+    }
+
+    pub fn mask_generator_mut(&mut self) -> &mut MaskRandomGenerator<G> {
+        &mut self.mask
     }
 
     pub fn try_fork_from_config(
@@ -176,6 +197,7 @@ impl<G: ByteRandomGenerator> EncryptionRandomGenerator<G> {
     }
 
     // Fills the input slice with random noise, using the random generator.
+    #[cfg(test)]
     pub(crate) fn fill_slice_with_random_noise_from_distribution<D, Scalar>(
         &mut self,
         output: &mut [Scalar],

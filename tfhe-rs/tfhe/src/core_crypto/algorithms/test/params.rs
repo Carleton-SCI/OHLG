@@ -2,6 +2,8 @@ use crate::core_crypto::commons::parameters::*;
 use crate::core_crypto::entities::*;
 use crate::core_crypto::prelude::{CastFrom, CastInto, UnsignedInteger};
 use crate::keycache::NamedParam;
+#[cfg(feature = "gpu")]
+use crate::shortint::parameters::ModulusSwitchType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -79,6 +81,19 @@ pub struct MultiBitTestParams<Scalar: UnsignedInteger> {
     pub thread_count: ThreadCount,
 }
 
+#[cfg(feature = "gpu")]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct NoiseSquashingMultiBitTestParameters<Scalar: UnsignedInteger> {
+    pub glwe_dimension: GlweDimension,
+    pub polynomial_size: PolynomialSize,
+    pub glwe_noise_distribution: DynamicDistribution<Scalar>,
+    pub decomp_base_log: DecompositionBaseLog,
+    pub decomp_level_count: DecompositionLevelCount,
+    pub grouping_factor: LweBskGroupingFactor,
+    pub message_modulus_log: MessageModulusLog,
+    pub ciphertext_modulus: CiphertextModulus<Scalar>,
+}
+
 // PartialEq is implemented manually because thread_count doesn't affect key generation and we want
 // to change its value in test without the need of regenerating keys in the key cache.
 impl<Scalar: UnsignedInteger> PartialEq for MultiBitTestParams<Scalar> {
@@ -123,6 +138,20 @@ pub struct FftWopPbsTestParams<Scalar: UnsignedInteger> {
     pub pfks_base_log: DecompositionBaseLog,
     pub cbs_level: DecompositionLevelCount,
     pub cbs_base_log: DecompositionBaseLog,
+    pub ciphertext_modulus: CiphertextModulus<Scalar>,
+}
+// Parameters to test NoiseSquashing implementation
+#[cfg(feature = "gpu")]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NoiseSquashingTestParams<Scalar: UnsignedInteger> {
+    pub lwe_dimension: LweDimension,
+    pub glwe_dimension: GlweDimension,
+    pub polynomial_size: PolynomialSize,
+    pub lwe_noise_distribution: DynamicDistribution<Scalar>,
+    pub glwe_noise_distribution: DynamicDistribution<Scalar>,
+    pub pbs_base_log: DecompositionBaseLog,
+    pub pbs_level: DecompositionLevelCount,
+    pub modulus_switch_noise_reduction_params: ModulusSwitchType,
     pub ciphertext_modulus: CiphertextModulus<Scalar>,
 }
 
@@ -198,6 +227,18 @@ impl<Scalar: UnsignedInteger> NamedParam for FftWopPbsTestParams<Scalar> {
                 self.pbs_level.0,
                 self.lwe_dimension.0, self.ciphertext_modulus, self.pfks_level.0, self.pfks_base_log.0,
                 self.cbs_level.0, self.cbs_base_log.0,
+            )
+    }
+}
+#[cfg(feature = "gpu")]
+impl<Scalar: UnsignedInteger> NamedParam for NoiseSquashingTestParams<Scalar> {
+    fn name(&self) -> String {
+        format!(
+                "PARAM_NOISE_SQUASHING_BOOTSTRAP_glwe_{}_poly_{}_decomp_base_log_{}_decomp_level_{}_lwe_dim_{}_ct_modulus_{}_lwe_std_dev_{}_glwe_std_dev_{}",
+                self.glwe_dimension.0, self.polynomial_size.0, self.pbs_base_log.0,
+                self.pbs_level.0,
+                self.lwe_dimension.0, self.ciphertext_modulus, self.lwe_noise_distribution,
+                self.glwe_noise_distribution,
             )
     }
 }

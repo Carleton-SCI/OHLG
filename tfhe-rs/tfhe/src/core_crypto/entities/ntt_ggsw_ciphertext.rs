@@ -176,16 +176,17 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> NttGgswCiphertext<
     pub fn into_levels(
         &self,
     ) -> impl DoubleEndedIterator<Item = NttGgswLevelMatrixView<'_, Scalar>> {
+        let decomposition_level_count = self.decomposition_level_count.0;
         self.data
             .as_ref()
-            .split_into(self.decomposition_level_count.0)
+            .split_into(decomposition_level_count)
             .enumerate()
             .map(move |(i, slice)| {
                 NttGgswLevelMatrixView::from_container(
                     slice,
                     self.glwe_size,
                     self.polynomial_size,
-                    DecompositionLevel(i + 1),
+                    DecompositionLevel(decomposition_level_count - i),
                 )
             })
     }
@@ -287,7 +288,9 @@ impl<Scalar: UnsignedInteger, C: Container<Element = Scalar>> NttGgswLevelMatrix
     }
 
     /// Return an iterator over the rows of the level matrices.
-    pub fn into_rows(self) -> impl DoubleEndedIterator<Item = NttGgswLevelRow<C>>
+    pub fn into_rows(
+        self,
+    ) -> impl DoubleEndedIterator<Item = NttGgswLevelRow<C>> + ExactSizeIterator<Item = NttGgswLevelRow<C>>
     where
         C: Split,
     {

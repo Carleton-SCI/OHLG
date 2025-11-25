@@ -1,21 +1,39 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "tfhe",
+    "tfhe-benchmark",
+    "tfhe-fft",
+    "tfhe-ntt",
     "tfhe-zk-pok",
     "tasks",
-    "apps/trivium",
-    "concrete-csprng",
+    "tfhe-csprng",
     "backends/tfhe-cuda-backend",
+    "backends/tfhe-hpu-backend",
     "utils/tfhe-versionable",
     "utils/tfhe-versionable-derive",
+    "utils/param_dedup",
+    "tests",
+    "mockups/tfhe-hpu-mockup",
 ]
 
 exclude = [
-    "tfhe/backward_compatibility_tests",
-    "utils/cargo-tfhe-lints-inner",
-    "utils/cargo-tfhe-lints"
+    "utils/tfhe-backward-compat-data",
+    "utils/tfhe-lints",
+    "apps/trivium",
 ]
+[workspace.dependencies]
+aligned-vec = { version = "0.6", default-features = false }
+bytemuck = "<1.24"
+dyn-stack = { version = "0.11", default-features = false }
+itertools = "0.14"
+num-complex = "0.4"
+pulp = { version = "0.21", default-features = false }
+rand = "0.8"
+rayon = "1.11"
+serde = { version = "1.0", default-features = false }
+wasm-bindgen = "0.2.101"
+getrandom = "0.2.8"
 
 [profile.bench]
 lto = "fat"
@@ -33,3 +51,13 @@ inherits = "dev"
 opt-level = 3
 lto = "off"
 debug-assertions = false
+
+[workspace.metadata.dylint]
+libraries = [{ path = "utils/tfhe-lints" }]
+
+[profile.debug_lto_off]
+inherits = "dev"
+debug = true
+lto = "off"
+debug-assertions = false
+overflow-checks = false

@@ -5,7 +5,7 @@ use super::standard::Ciphertext;
 use crate::conformance::ParameterSetConformant;
 use crate::core_crypto::entities::*;
 use crate::shortint::backward_compatibility::ciphertext::CompressedCiphertextVersions;
-use crate::shortint::parameters::{CarryModulus, MessageModulus};
+use crate::shortint::parameters::{AtomicPatternKind, CarryModulus, MessageModulus};
 use serde::{Deserialize, Serialize};
 use tfhe_versionable::Versionize;
 
@@ -19,7 +19,7 @@ pub struct CompressedCiphertext {
     pub degree: Degree,
     pub message_modulus: MessageModulus,
     pub carry_modulus: CarryModulus,
-    pub pbs_order: PBSOrder,
+    pub atomic_pattern: AtomicPatternKind,
     pub noise_level: NoiseLevel,
 }
 
@@ -27,12 +27,21 @@ impl ParameterSetConformant for CompressedCiphertext {
     type ParameterSet = CiphertextConformanceParams;
 
     fn is_conformant(&self, param: &CiphertextConformanceParams) -> bool {
-        self.ct.is_conformant(&param.ct_params)
-            && self.message_modulus == param.message_modulus
-            && self.carry_modulus == param.carry_modulus
-            && self.pbs_order == param.pbs_order
-            && self.degree == param.degree
-            && self.noise_level == param.noise_level
+        let Self {
+            ct,
+            degree,
+            message_modulus,
+            carry_modulus,
+            atomic_pattern,
+            noise_level,
+        } = self;
+
+        ct.is_conformant(&param.ct_params)
+            && *message_modulus == param.message_modulus
+            && *carry_modulus == param.carry_modulus
+            && *atomic_pattern == param.atomic_pattern
+            && *degree == param.degree
+            && *noise_level == param.noise_level
     }
 }
 
@@ -43,18 +52,18 @@ impl CompressedCiphertext {
             degree,
             message_modulus,
             carry_modulus,
-            pbs_order,
+            atomic_pattern,
             noise_level,
         } = self;
 
-        Ciphertext {
-            ct: ct.decompress_into_lwe_ciphertext(),
-            degree: *degree,
-            message_modulus: *message_modulus,
-            carry_modulus: *carry_modulus,
-            pbs_order: *pbs_order,
-            noise_level: *noise_level,
-        }
+        Ciphertext::new(
+            ct.decompress_into_lwe_ciphertext(),
+            *degree,
+            *noise_level,
+            *message_modulus,
+            *carry_modulus,
+            *atomic_pattern,
+        )
     }
 
     /// Deconstruct a [`CompressedCiphertext`] into its constituents.
@@ -65,7 +74,7 @@ impl CompressedCiphertext {
         Degree,
         MessageModulus,
         CarryModulus,
-        PBSOrder,
+        AtomicPatternKind,
         NoiseLevel,
     ) {
         let Self {
@@ -73,7 +82,7 @@ impl CompressedCiphertext {
             degree,
             message_modulus,
             carry_modulus,
-            pbs_order,
+            atomic_pattern,
             noise_level,
         } = self;
 
@@ -82,7 +91,7 @@ impl CompressedCiphertext {
             degree,
             message_modulus,
             carry_modulus,
-            pbs_order,
+            atomic_pattern,
             noise_level,
         )
     }
@@ -93,7 +102,7 @@ impl CompressedCiphertext {
         degree: Degree,
         message_modulus: MessageModulus,
         carry_modulus: CarryModulus,
-        pbs_order: PBSOrder,
+        atomic_pattern: AtomicPatternKind,
         noise_level: NoiseLevel,
     ) -> Self {
         Self {
@@ -101,7 +110,7 @@ impl CompressedCiphertext {
             degree,
             message_modulus,
             carry_modulus,
-            pbs_order,
+            atomic_pattern,
             noise_level,
         }
     }

@@ -1,9 +1,8 @@
 use crate::integer::ciphertext::IntegerRadixCiphertext;
-use crate::integer::server_key::radix_parallel::sub::SignedOperation;
+use crate::integer::server_key::radix_parallel::OutputFlag;
 use crate::integer::server_key::CheckError;
 use crate::integer::{BooleanBlock, RadixCiphertext, ServerKey, SignedRadixCiphertext};
 use crate::shortint::ciphertext::{Degree, MaxDegree, NoiseLevel};
-use crate::shortint::Ciphertext;
 
 impl ServerKey {
     /// Computes homomorphically a subtraction between two ciphertexts encrypting integer values.
@@ -17,10 +16,10 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg_1 = 12;
     /// let msg_2 = 10;
@@ -56,11 +55,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg_1 = 128;
     /// let msg_2 = 99;
@@ -90,11 +89,11 @@ impl ServerKey {
     ///
     ///```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg_1 = 182u64;
     /// let msg_2 = 120u64;
@@ -160,11 +159,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg = 1u64;
     ///
@@ -176,7 +175,7 @@ impl ServerKey {
     /// let ct_res = sks.checked_sub(&ctxt_1, &ctxt_2);
     ///
     /// match ct_res {
-    ///     Err(x) => panic!("{:?}", x),
+    ///     Err(x) => panic!("{x:?}"),
     ///     Ok(y) => {
     ///         let clear: u64 = cks.decrypt(&y);
     ///         assert_eq!(0, clear);
@@ -202,12 +201,12 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// let num_blocks = 4;
     ///
     /// // Generate the client key and the server key:
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg1 = 41u8;
     /// let msg2 = 101u8;
@@ -236,11 +235,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg_1 = 120u8;
     /// let msg_2 = 181u8;
@@ -285,11 +284,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg_1 = 120u8;
     /// let msg_2 = 181u8;
@@ -331,11 +330,11 @@ impl ServerKey {
     ///
     /// ```rust
     /// use tfhe::integer::gen_keys_radix;
-    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS;
+    /// use tfhe::shortint::parameters::PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128;
     ///
     /// // We have 4 * 2 = 8 bits of message
     /// let num_blocks = 4;
-    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS, num_blocks);
+    /// let (cks, sks) = gen_keys_radix(PARAM_MESSAGE_2_CARRY_2_KS_PBS_GAUSSIAN_2M128, num_blocks);
     ///
     /// let msg_1 = 1u8;
     /// let msg_2 = 2u8;
@@ -405,139 +404,39 @@ impl ServerKey {
             lhs.blocks.len(),
             rhs.blocks.len()
         );
-        // Here we have to use manual unchecked_sub on shortint blocks
-        // rather than calling integer's unchecked_sub as we need each subtraction
-        // to be independent from other blocks. And we don't want to do subtraction by
-        // adding negation
-        let result = lhs
-            .blocks
-            .iter()
-            .zip(rhs.blocks.iter())
-            .map(|(lhs_block, rhs_block)| self.key.unchecked_sub(lhs_block, rhs_block))
-            .collect::<Vec<_>>();
-        let mut result = RadixCiphertext::from(result);
-        let overflowed = self.unsigned_overflowing_propagate_subtraction_borrow(&mut result);
+
+        const INPUT_BORROW: Option<&BooleanBlock> = None;
+        const COMPUTE_OVERFLOW: bool = true;
+
+        let mut result = lhs.clone();
+        let overflowed = self
+            .advanced_sub_assign_with_borrow_sequential(
+                &mut result,
+                rhs,
+                INPUT_BORROW,
+                COMPUTE_OVERFLOW,
+            )
+            .expect("overflow computation was requested");
         (result, overflowed)
     }
 
-    pub(crate) fn unchecked_signed_overflowing_add_or_sub(
-        &self,
-        lhs: &SignedRadixCiphertext,
-        rhs: &SignedRadixCiphertext,
-        signed_operation: SignedOperation,
-    ) -> (SignedRadixCiphertext, BooleanBlock) {
-        let mut result = lhs.clone();
-
-        let num_blocks = result.blocks.len();
-        if num_blocks == 0 {
-            return (result, self.create_trivial_boolean_block(false));
-        }
-
-        fn block_add_assign_returning_carry(
-            sks: &ServerKey,
-            lhs: &mut Ciphertext,
-            rhs: &Ciphertext,
-        ) -> Ciphertext {
-            sks.key.unchecked_add_assign(lhs, rhs);
-            let (carry, message) = rayon::join(
-                || sks.key.carry_extract(lhs),
-                || sks.key.message_extract(lhs),
-            );
-
-            *lhs = message;
-
-            carry
-        }
-
-        // 2_2, 3_3, 4_4
-        // If we have at least 2 bits and at least as much carries
-        if self.key.message_modulus.0 >= 4 && self.key.carry_modulus.0 >= self.key.message_modulus.0
-        {
-            if signed_operation == SignedOperation::Subtraction {
-                self.unchecked_sub_assign(&mut result, rhs);
-            } else {
-                self.unchecked_add_assign(&mut result, rhs);
-            }
-
-            let mut input_carry = self.key.create_trivial(0);
-
-            // For the first block do the first step of overflow computation in parallel
-            let (_, last_block_inner_propagation) = rayon::join(
-                || {
-                    input_carry =
-                        block_add_assign_returning_carry(self, &mut result.blocks[0], &input_carry);
-                },
-                || {
-                    self.generate_last_block_inner_propagation(
-                        &lhs.blocks[num_blocks - 1],
-                        &rhs.blocks[num_blocks - 1],
-                        signed_operation,
-                    )
-                },
-            );
-
-            for block in result.blocks[1..num_blocks - 1].iter_mut() {
-                input_carry = block_add_assign_returning_carry(self, block, &input_carry);
-            }
-
-            // Treat the last block separately to handle last step of overflow behavior
-            let output_carry = block_add_assign_returning_carry(
-                self,
-                &mut result.blocks[num_blocks - 1],
-                &input_carry,
-            );
-            let overflowed = self.resolve_signed_overflow(
-                last_block_inner_propagation,
-                &BooleanBlock::new_unchecked(input_carry),
-                &BooleanBlock::new_unchecked(output_carry),
-            );
-
-            return (result, overflowed);
-        }
-
-        // 1_X parameters
-        //
-        // Same idea as other algorithms, however since we have 1 bit per block
-        // we do not have to resolve any inner propagation but it adds one more
-        // sequential PBS
-        if self.key.message_modulus.0 == 2 {
-            if signed_operation == SignedOperation::Subtraction {
-                self.unchecked_sub_assign(&mut result, rhs);
-            } else {
-                self.unchecked_add_assign(&mut result, rhs);
-            }
-
-            let mut input_carry = self.key.create_trivial(0);
-            for block in result.blocks[..num_blocks - 1].iter_mut() {
-                input_carry = block_add_assign_returning_carry(self, block, &input_carry);
-            }
-
-            let output_carry = block_add_assign_returning_carry(
-                self,
-                &mut result.blocks[num_blocks - 1],
-                &input_carry,
-            );
-
-            // Encode the rule
-            // "Overflow occurred if the carry into the last bit is different than the carry out
-            // of the last bit"
-            let overflowed = self.key.not_equal(&output_carry, &input_carry);
-            return (result, BooleanBlock::new_unchecked(overflowed));
-        }
-
-        panic!(
-            "Invalid combo of message modulus ({}) and carry modulus ({}) \n\
-            This function requires the message modulus >= 2 and carry modulus >= message_modulus \n\
-            I.e. PARAM_MESSAGE_X_CARRY_Y where X >= 1 and Y >= X.",
-            self.key.message_modulus.0, self.key.carry_modulus.0
-        );
-    }
     pub fn unchecked_signed_overflowing_sub(
         &self,
         lhs: &SignedRadixCiphertext,
         rhs: &SignedRadixCiphertext,
     ) -> (SignedRadixCiphertext, BooleanBlock) {
-        self.unchecked_signed_overflowing_add_or_sub(lhs, rhs, SignedOperation::Subtraction)
+        let flipped_rhs = self.bitnot(rhs);
+        let carry = self.create_trivial_boolean_block(true);
+        let mut result = lhs.clone();
+        let overflowed = self
+            .advanced_add_assign_with_carry_sequential_parallelized(
+                &mut result.blocks,
+                &flipped_rhs.blocks,
+                Some(&carry),
+                OutputFlag::from_signedness(true),
+            )
+            .expect("overflow flat was requested");
+        (result, overflowed)
     }
 
     pub fn signed_overflowing_sub(

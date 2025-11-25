@@ -15,7 +15,7 @@ use crate::core_crypto::entities::Polynomial;
 ///
 /// ```rust
 /// use tfhe::core_crypto::algorithms::slice_algorithms::*;
-/// let mut first = vec![1u8, 2, 3, 4, 5, 6];
+/// let first = vec![1u8, 2, 3, 4, 5, 6];
 /// let second = vec![255u8, 255, 255, 1, 2, 3];
 /// let dot_product = slice_wrapping_dot_product(&first, &second);
 /// assert_eq!(dot_product, 26);
@@ -74,7 +74,7 @@ where
 ///
 /// ```rust
 /// use tfhe::core_crypto::algorithms::slice_algorithms::*;
-/// let mut first = vec![1u8, 2, 3, 4, 5, 6];
+/// let first = vec![1u8, 2, 3, 4, 5, 6];
 /// let second = vec![255u8, 255, 255, 1, 2, 3];
 /// let mut add = vec![0_u8; 6];
 /// slice_wrapping_add(&mut add, &first, &second);
@@ -181,7 +181,7 @@ pub fn slice_wrapping_add_assign_custom_mod<Scalar>(
         .for_each(|(lhs, &rhs)| *lhs = (*lhs).wrapping_add_custom_mod(rhs, custom_modulus));
 }
 
-/// Add a slice containing unsigned integers to another one mutiplied by a scalar.
+/// Add a slice containing unsigned integers to another one multiplied by a scalar.
 ///
 /// Let *a*,*b* be two slices, let *c* be a scalar, this computes: *a <- a+bc*
 ///
@@ -229,7 +229,7 @@ pub fn slice_wrapping_add_scalar_mul_assign<Scalar>(
 ///
 /// ```rust
 /// use tfhe::core_crypto::algorithms::slice_algorithms::*;
-/// let mut first = vec![1u8, 2, 3, 4, 5, 6];
+/// let first = vec![1u8, 2, 3, 4, 5, 6];
 /// let second = vec![255u8, 255, 255, 1, 2, 3];
 /// let mut add = vec![0_u8; 6];
 /// slice_wrapping_sub(&mut add, &first, &second);
@@ -336,7 +336,7 @@ pub fn slice_wrapping_sub_assign_custom_mod<Scalar>(
         .for_each(|(lhs, &rhs)| *lhs = (*lhs).wrapping_sub_custom_mod(rhs, custom_modulus));
 }
 
-/// Subtract a slice containing unsigned integers to another one mutiplied by a scalar,
+/// Subtract a slice containing unsigned integers to another one multiplied by a scalar,
 /// element-wise and in place.
 ///
 /// Let *a*,*b* be two slices, let *c* be a scalar, this computes: *a <- a-bc*
@@ -500,9 +500,9 @@ pub fn slice_wrapping_opposite_assign<Scalar>(slice: &mut [Scalar])
 where
     Scalar: UnsignedInteger,
 {
-    slice
-        .iter_mut()
-        .for_each(|elt| *elt = (*elt).wrapping_neg());
+    for elt in slice.iter_mut() {
+        *elt = (*elt).wrapping_neg();
+    }
 }
 
 pub fn slice_wrapping_opposite_assign_custom_mod<Scalar>(
@@ -511,9 +511,9 @@ pub fn slice_wrapping_opposite_assign_custom_mod<Scalar>(
 ) where
     Scalar: UnsignedInteger,
 {
-    slice
-        .iter_mut()
-        .for_each(|elt| *elt = (*elt).wrapping_neg_custom_mod(custom_modulus));
+    for elt in slice.iter_mut() {
+        *elt = (*elt).wrapping_neg_custom_mod(custom_modulus);
+    }
 }
 
 /// Multiply a slice containing unsigned integers by a scalar, element-wise and in place.
@@ -536,8 +536,9 @@ pub fn slice_wrapping_scalar_mul_assign<Scalar>(lhs: &mut [Scalar], rhs: Scalar)
 where
     Scalar: UnsignedInteger,
 {
-    lhs.iter_mut()
-        .for_each(|lhs| *lhs = (*lhs).wrapping_mul(rhs));
+    for lhs in lhs.iter_mut() {
+        *lhs = (*lhs).wrapping_mul(rhs);
+    }
 }
 
 pub fn slice_wrapping_scalar_mul_assign_custom_mod<Scalar>(
@@ -547,16 +548,18 @@ pub fn slice_wrapping_scalar_mul_assign_custom_mod<Scalar>(
 ) where
     Scalar: UnsignedInteger,
 {
-    lhs.iter_mut()
-        .for_each(|lhs| *lhs = (*lhs).wrapping_mul_custom_mod(rhs, custom_modulus));
+    for lhs in lhs.iter_mut() {
+        *lhs = (*lhs).wrapping_mul_custom_mod(rhs, custom_modulus);
+    }
 }
 
 pub fn slice_wrapping_scalar_div_assign<Scalar>(lhs: &mut [Scalar], rhs: Scalar)
 where
     Scalar: UnsignedInteger,
 {
-    lhs.iter_mut()
-        .for_each(|lhs| *lhs = (*lhs).wrapping_div(rhs));
+    for lhs in lhs.iter_mut() {
+        *lhs = (*lhs).wrapping_div(rhs);
+    }
 }
 
 /// Add the same scalar to all elements of mutable slice in place.
@@ -579,8 +582,9 @@ pub fn slice_wrapping_scalar_add_assign<Scalar>(lhs: &mut [Scalar], rhs: Scalar)
 where
     Scalar: UnsignedInteger,
 {
-    lhs.iter_mut()
-        .for_each(|dst| *dst = (*dst).wrapping_add(rhs));
+    for dst in lhs.iter_mut() {
+        *dst = (*dst).wrapping_add(rhs);
+    }
 }
 
 /// Subtract the same scalar to all elements of mutable slice in place.
@@ -603,8 +607,9 @@ pub fn slice_wrapping_scalar_sub_assign<Scalar>(lhs: &mut [Scalar], rhs: Scalar)
 where
     Scalar: UnsignedInteger,
 {
-    lhs.iter_mut()
-        .for_each(|dst| *dst = (*dst).wrapping_sub(rhs));
+    for dst in lhs.iter_mut() {
+        *dst = (*dst).wrapping_sub(rhs);
+    }
 }
 
 /// Primitive for compact LWE public key

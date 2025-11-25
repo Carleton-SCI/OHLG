@@ -4,16 +4,16 @@
  * Perform the negation of a u32 input LWE ciphertext vector.
  * See the equivalent operation on u64 ciphertexts for more details.
  */
-void cuda_negate_lwe_ciphertext_vector_32(void *stream, uint32_t gpu_index,
-                                          void *lwe_array_out,
-                                          void *lwe_array_in,
-                                          uint32_t input_lwe_dimension,
-                                          uint32_t input_lwe_ciphertext_count) {
+void cuda_negate_lwe_ciphertext_vector_32(
+    void *stream, uint32_t gpu_index, void *lwe_array_out,
+    void const *lwe_array_in, const uint32_t input_lwe_dimension,
+    const uint32_t input_lwe_ciphertext_count) {
 
-  host_negation(static_cast<cudaStream_t>(stream), gpu_index,
-                static_cast<uint32_t *>(lwe_array_out),
-                static_cast<uint32_t *>(lwe_array_in), input_lwe_dimension,
-                input_lwe_ciphertext_count);
+  host_negation<uint32_t>(static_cast<cudaStream_t>(stream), gpu_index,
+                          static_cast<uint32_t *>(lwe_array_out),
+                          static_cast<const uint32_t *>(lwe_array_in),
+                          input_lwe_dimension, input_lwe_ciphertext_count);
+  cuda_synchronize_stream(static_cast<cudaStream_t>(stream), gpu_index);
 }
 
 /*
@@ -38,14 +38,14 @@ void cuda_negate_lwe_ciphertext_vector_32(void *stream, uint32_t gpu_index,
  * LWE ciphertext vector is left unchanged. This function is a wrapper to a
  * device function that performs the operation on the GPU.
  */
-void cuda_negate_lwe_ciphertext_vector_64(void *stream, uint32_t gpu_index,
-                                          void *lwe_array_out,
-                                          void *lwe_array_in,
-                                          uint32_t input_lwe_dimension,
-                                          uint32_t input_lwe_ciphertext_count) {
+void cuda_negate_lwe_ciphertext_vector_64(
+    void *stream, uint32_t gpu_index, void *lwe_array_out,
+    void const *lwe_array_in, const uint32_t input_lwe_dimension,
+    const uint32_t input_lwe_ciphertext_count) {
 
-  host_negation(static_cast<cudaStream_t>(stream), gpu_index,
-                static_cast<uint64_t *>(lwe_array_out),
-                static_cast<uint64_t *>(lwe_array_in), input_lwe_dimension,
-                input_lwe_ciphertext_count);
+  host_negation<uint64_t>(static_cast<cudaStream_t>(stream), gpu_index,
+                          static_cast<uint64_t *>(lwe_array_out),
+                          static_cast<const uint64_t *>(lwe_array_in),
+                          input_lwe_dimension, input_lwe_ciphertext_count);
+  cuda_synchronize_stream(static_cast<cudaStream_t>(stream), gpu_index);
 }

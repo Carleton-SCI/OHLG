@@ -1,11 +1,10 @@
 pub mod params;
+use super::misc::check_encrypted_content_respects_mod;
+use crate::core_crypto::algorithms::misc::divide_round;
+use crate::core_crypto::keycache::KeyCacheAccess;
+use crate::core_crypto::prelude::*;
 pub(crate) use params::*;
-
-pub(crate) use super::misc::check_encrypted_content_respects_mod;
-pub(crate) use crate::core_crypto::algorithms::misc::divide_round;
-pub(crate) use crate::core_crypto::keycache::KeyCacheAccess;
-pub(crate) use crate::core_crypto::prelude::*;
-pub(crate) use std::fmt::Debug;
+use std::fmt::Debug;
 
 mod ggsw_encryption;
 mod glwe_encryption;
@@ -24,12 +23,13 @@ mod lwe_packing_keyswitch_key_generation;
 mod lwe_private_functional_packing_keyswitch;
 pub(crate) mod lwe_programmable_bootstrapping;
 mod modulus_switch_compression;
-mod noise_distribution;
+pub(crate) mod modulus_switch_noise_reduction;
+pub(crate) mod noise_distribution;
 
 pub struct TestResources {
     pub seeder: Box<dyn Seeder>,
-    pub encryption_random_generator: EncryptionRandomGenerator<ActivatedRandomGenerator>,
-    pub secret_random_generator: SecretRandomGenerator<ActivatedRandomGenerator>,
+    pub encryption_random_generator: EncryptionRandomGenerator<DefaultRandomGenerator>,
+    pub secret_random_generator: SecretRandomGenerator<DefaultRandomGenerator>,
 }
 
 impl TestResources {
@@ -178,6 +178,36 @@ pub const DUMMY_31_U32: ClassicTestParams<u32> = ClassicTestParams {
     ciphertext_modulus: CiphertextModulus::new(1 << 31),
 };
 
+#[cfg(feature = "gpu")]
+pub const NOISE_SQUASHING_PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128:
+    NoiseSquashingMultiBitTestParameters<u128> = NoiseSquashingMultiBitTestParameters {
+    glwe_dimension: GlweDimension(2),
+    polynomial_size: PolynomialSize(2048),
+    glwe_noise_distribution: DynamicDistribution::new_t_uniform(30),
+    decomp_base_log: DecompositionBaseLog(23),
+    decomp_level_count: DecompositionLevelCount(3),
+    grouping_factor: LweBskGroupingFactor(4),
+    message_modulus_log: MessageModulusLog(4),
+    ciphertext_modulus: CiphertextModulus::<u128>::new_native(),
+};
+
+#[cfg(feature = "gpu")]
+pub const PARAM_GPU_MULTI_BIT_GROUP_4_MESSAGE_2_CARRY_2_KS_PBS_TUNIFORM_2M128: MultiBitTestParams<
+    u64,
+> = MultiBitTestParams {
+    input_lwe_dimension: LweDimension(920),
+    lwe_noise_distribution: DynamicDistribution::new_t_uniform(45),
+    decomp_base_log: DecompositionBaseLog(22),
+    decomp_level_count: DecompositionLevelCount(1),
+    glwe_dimension: GlweDimension(1),
+    polynomial_size: PolynomialSize(2048),
+    glwe_noise_distribution: DynamicDistribution::new_t_uniform(17),
+    message_modulus_log: MessageModulusLog(4),
+    ciphertext_modulus: CiphertextModulus::new_native(),
+    grouping_factor: LweBskGroupingFactor(4),
+    thread_count: ThreadCount(5),
+};
+
 pub const MULTI_BIT_2_2_2_PARAMS: MultiBitTestParams<u64> = MultiBitTestParams {
     input_lwe_dimension: LweDimension(818),
     lwe_noise_distribution: DynamicDistribution::new_gaussian_from_std_dev(StandardDev(
@@ -233,6 +263,24 @@ pub const MULTI_BIT_2_2_2_CUSTOM_MOD_PARAMS: MultiBitTestParams<u64> = MultiBitT
 };
 
 pub const MULTI_BIT_2_2_3_PARAMS: MultiBitTestParams<u64> = MultiBitTestParams {
+    input_lwe_dimension: LweDimension(888),
+    lwe_noise_distribution: DynamicDistribution::new_gaussian_from_std_dev(StandardDev(
+        0.0000006125031601933181,
+    )),
+    decomp_base_log: DecompositionBaseLog(21),
+    decomp_level_count: DecompositionLevelCount(1),
+    glwe_dimension: GlweDimension(1),
+    polynomial_size: PolynomialSize(2048),
+    glwe_noise_distribution: DynamicDistribution::new_gaussian_from_std_dev(StandardDev(
+        0.0000000000000003152931493498455,
+    )),
+    message_modulus_log: MessageModulusLog(4),
+    ciphertext_modulus: CiphertextModulus::new_native(),
+    grouping_factor: LweBskGroupingFactor(3),
+    thread_count: ThreadCount(12),
+};
+
+pub const MULTI_BIT_2_2_3_PARAMS_U128: MultiBitTestParams<u128> = MultiBitTestParams {
     input_lwe_dimension: LweDimension(888),
     lwe_noise_distribution: DynamicDistribution::new_gaussian_from_std_dev(StandardDev(
         0.0000006125031601933181,
@@ -461,7 +509,7 @@ pub(crate) fn gen_keys_or_get_from_cache_if_enabled<
 }
 
 // Macro to generate tests for all parameter sets
-macro_rules! create_parametrized_test{
+macro_rules! create_parameterized_test{
     ($name:ident { $($param:ident),*  $(,)? }) => {
         ::paste::paste! {
             $(
@@ -473,7 +521,7 @@ macro_rules! create_parametrized_test{
         }
     };
     ($name:ident)=> {
-        create_parametrized_test!($name
+        create_parameterized_test!($name
         {
             TEST_PARAMS_4_BITS_NATIVE_U64,
             TEST_PARAMS_3_BITS_63_U64
@@ -482,9 +530,9 @@ macro_rules! create_parametrized_test{
 }
 
 // Macro to generate tests for all parameter sets
-macro_rules! create_parametrized_test_with_non_native_parameters {
+macro_rules! create_parameterized_test_with_non_native_parameters {
     ($name:ident) => {
-        create_parametrized_test!($name {
+        create_parameterized_test!($name {
             TEST_PARAMS_4_BITS_NATIVE_U64,
             TEST_PARAMS_3_BITS_63_U64,
             TEST_PARAMS_3_BITS_SOLINAS_U64
@@ -492,4 +540,4 @@ macro_rules! create_parametrized_test_with_non_native_parameters {
     };
 }
 
-pub(crate) use {create_parametrized_test, create_parametrized_test_with_non_native_parameters};
+pub(crate) use {create_parameterized_test, create_parameterized_test_with_non_native_parameters};
