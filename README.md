@@ -51,6 +51,44 @@ The implementation also allows for choosing the TFHE-io parameters ([link](https
 let param_choice = "TFHE_RS";
 ```
 
+#### ODM (Oblivious Direct Matching) Application
+The application works as follows:
+1. **Client**
+   * Prepare and serialize the data flow description of the matching circuit.
+   * Encrypt the parameters of the gates.
+   * Encrypt the query data, if it is not already stored on the server.
+   * Send the serialized data flow description, encrypted gate parameters, encrypted query data, and the bootstrapping key to the server.
+2. **Server**
+   * Execute the matching circuit, as defined by the received data flow description and using the encrypted gate parameters, on the encrypted query data and the encrypted search corpus.
+   * Return the encrypted result to the client.
+3. **Client**
+   * Decrypt the result to interpret the matching outcome.
+
+To run the experiment, first execute:
+```
+cargo run --bin client_odm --release
+```
+This creates and serializes the keys, the search character ciphertext, the search corpus ciphertext, and the encrypted gate parameters. The code asks the user to enter the search character should be encrypted and sent to the server. The code also contains a sample search corpus of "ABCDEFGHIJ" which can be changed in ```ohlg/bin/client_odm.rs```
+```Rust
+let plain_search_corpus = "ABCDEFGHIJ";
+```
+Changing the length of the search corpus (originally 10 bytes) is not tested.  
+
+The second step is to run the server process by:
+```
+cargo run --bin server_odm --release
+```
+which does the obfuscated processing. **Note** that reading the encrypted gate parameters might take a while because the data serialization technique (save and read from disk) is not optimized, this is just a prototype.
+
+The third step is to run the verification process, which is typically at the client side, by:
+```
+cargo run --bin verif_odm --release
+```
+which decrypts and prints the matching result.
+
+
+
+
 #### Integer Benchmarking
 The repo also includes benchmarks for `tfhe::shortint` and `tfhe::integer` (Radix) bitwise AND operations.
 
@@ -166,40 +204,6 @@ The `longint` or simply `integer` is the main crate in TFHE-rs. Its implementati
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+  
 ```
 
-#### ODM (Oblivious Direct Matching) Application
-The application works as follows:
-1. **Client**
-   * Prepare and serialize the data flow description of the matching circuit.
-   * Encrypt the parameters of the gates.
-   * Encrypt the query data, if it is not already stored on the server.
-   * Send the serialized data flow description, encrypted gate parameters, encrypted query data, and the bootstrapping key to the server.
-2. **Server**
-   * Execute the matching circuit, as defined by the received data flow description and using the encrypted gate parameters, on the encrypted query data and the encrypted search corpus.
-   * Return the encrypted result to the client.
-3. **Client**
-   * Decrypt the result to interpret the matching outcome.
-
-To run the experiment, first execute:
-```
-cargo run --bin client_odm --release
-```
-This creates and serializes the keys, the search character ciphertext, the search corpus ciphertext, and the encrypted gate parameters. The code asks the user to enter the search character should be encrypted and sent to the server. The code also contains a sample search corpus of "ABCDEFGHIJ" which can be changed in ```ohlg/bin/client_odm.rs```
-```Rust
-let plain_search_corpus = "ABCDEFGHIJ";
-```
-Changing the length of the search corpus (originally 10 bytes) is not tested.  
-
-The second step is to run the server process by:
-```
-cargo run --bin server_odm --release
-```
-which does the obfuscated processing. **Note** that reading the encrypted gate parameters might take a while because the data serialization technique (save and read from disk) is not optimized, this is just a prototype.
-
-The third step is to run the verification process, which is typically at the client side, by:
-```
-cargo run --bin verif_odm --release
-```
-which decrypts and prints the matching result.
 
 
 ### Using the docker image
@@ -234,7 +238,14 @@ which asks the user to enter the search character to be encrypted. Then
 ./server_odm
 ./verif_odm
 ```
-sequentially to execute the matching process and decrypt the result.
+sequentially to execute the matching process and decrypt the result.  
+
+To benchmark shortint and longint operations (Please note it may take few miutes up to 10~15 for longint):
+```
+./shortint
+./longint
+```  
+
 For a user interested in modifying rust scripts (```main.rs``` can be modified to test other gates for example), the ```Dockerfile``` is also provided. Modify the rust code as required, then use the docker file to create a new image:
 ```
 docker build -t new_image_name .
