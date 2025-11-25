@@ -136,29 +136,35 @@ Summary (8 samples per cell)
 ```
 The `longint` or simply `integer` is the main crate in TFHE-rs. Its implementation consists fundamentally of blocks of `shortint` where each core block contains a segment of the ciphertext. The higher API covers these details from the user, but an interested user can use the radix interface to fine-tune the block size and number of blocks of the ciphertext. It should be also noted that, by default, the `shortint` blocks of an `integer` are processed independently on different threads. A few important notes to be taken from the results above:  
 1- The effect of threading is significant and it makes the processing of different blocks happen at the same time.
+```
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
-| Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted 
+| Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted  |
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
 |        1_1        |   1    |    no     |       1        |     14.10ms |      0x0001 |      0x0001 |      0x0001 |
 |        1_1        |   4    |    no     |       4        |     56.26ms |      0x0005 |      0x0003 |      0x0001 |
-|        1_1        |   4    |    yes    |       4        |     14.60ms |      0x0005 |      0x0003 |      0x0001 |  
-
+|        1_1        |   4    |    yes    |       4        |     14.60ms |      0x0005 |      0x0003 |      0x0001 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+  
+```
 2- An `integer` variable with 1 block takes the same time as the core `shortint`, and the threading has no effec in this case  
+```
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
-| Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted 
+| Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted  |
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
 |        3_3        |   1    |    no     |       3        |    154.17ms |      0x0005 |      0x0003 |      0x0001 |
-|        3_3        |   1    |    yes    |       3        |    153.90ms |      0x0005 |      0x0003 |      0x0001 |  
-
+|        3_3        |   1    |    yes    |       3        |    153.90ms |      0x0005 |      0x0003 |      0x0001 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+  
+```
 3- Again, executing n 1-bit bitwise operations (either threaded or not) is faster than executing 1 n-bit operation  
+```
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
 | Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted 
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
 |        1_1        |   3    |    no     |       3        |     42.23ms |      0x0005 |      0x0003 |      0x0001 |
 |        1_1        |   3    |    yes    |       3        |     14.36ms |      0x0005 |      0x0003 |      0x0001 |
 |        3_3        |   1    |    no     |       3        |    154.17ms |      0x0005 |      0x0003 |      0x0001 |
-|        3_3        |   1    |    yes    |       3        |    153.90ms |      0x0005 |      0x0003 |      0x0001 |  
-
+|        3_3        |   1    |    yes    |       3        |    153.90ms |      0x0005 |      0x0003 |      0x0001 |
++-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+  
+```
 
 #### ODM (Oblivious Direct Matching) Application
 The application works as follows:
