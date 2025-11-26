@@ -112,7 +112,7 @@ Sample results:
 ```
 The `shortint` is the basic building block of the integer framework in TFHE-rs. We are investigating the performance of the 4 main configurations, named after the size of the ciphertext as `message_carry` bits. For example, a 2_2 configuration indicates that the ciphertext has an initial space for 2-bit message and after homomorphic operations it has a space for additional 2-bit carry. If a bitwise operation between two n-bit variables must be done in one operation (i.e. one bootstrapping process), n_n configuration must be used. Although the result does not have a carry, but the internal evaluation methodology uses the full carry's n bits to construct the rotation polynomial.
 
-From the results, it can be seen that in most cases evaluating a bitwise operation between two 3-bit variables (160 ms) is slower compared to evaluating the operation is three 1-bit operations (3 * 14 = 42 ms ) between the two variables. This is because increasing the capacity of the ciphertext requires a significant increase in the underlying TLWE ciphertext and the rotation polynomial/Look up table of the Bootstrapping step. We should stress that while this speed comparison is valid for bitwise operations, it may be not the same for integer arithmetic operations. This is because an n-bit arithmetic (like n-bit multiplication) typically require m 1-bit gates where n>>m. In this case, using the n-bit encoding will be faster.
+From the results, it can be seen that evaluating a bitwise operation between two 3-bit variables (152 ms) is slower compared to evaluating the operation as three 1-bit operations (3 * 14 = 42 ms) between the two variables. This is because increasing the capacity of the ciphertext requires a significant increase in the size of the underlying TLWE ciphertext and the rotation polynomial/Look up table of the Bootstrapping step. We should stress that while this speed comparison is valid for bitwise operations, it may be not the same for integer arithmetic operations. This is because an n-bit arithmetic (like n-bit multiplication) typically require m 1-bit gates where m>>n. In this case, using the n-bit encoding will be faster.
 
 
 
@@ -173,7 +173,7 @@ Summary (8 samples per cell)
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
 ```
 The `longint` or simply `integer` is the main crate in TFHE-rs. Its implementation consists fundamentally of blocks of `shortint` where each core block contains a segment of the ciphertext. The higher API covers these details from the user, but an interested user can use the radix interface to fine-tune the block size and number of blocks of the ciphertext. It should be also noted that, by default, the `shortint` blocks of an `integer` are processed independently on different threads. A few important notes to be taken from the results above:  
-1- The effect of threading is significant and it makes the processing of different blocks happen at the same time.
+1- The effect of threading is significant, and it makes the processing of different blocks happen at the same time.
 ```
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
 | Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted  |
@@ -183,7 +183,7 @@ The `longint` or simply `integer` is the main crate in TFHE-rs. Its implementati
 |        1_1        |   4    |    yes    |       4        |     14.60ms |      0x0005 |      0x0003 |      0x0001 |
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+  
 ```
-2- An `integer` variable with 1 block takes the same time as the core `shortint`, and the threading has no effec in this case  
+2- An `integer` variable with 1 block takes the same time as the core `shortint`, and the threading has no effect in this case  
 ```
 +-------------------+--------+-----------+----------------+-------------+-------------+-------------+-------------+
 | Param (Msg_Carry) | Blocks | Threaded  | Total Msg bits |   Avg AND   |   Plain A   |   Plain B   |  Decrypted  |
@@ -224,11 +224,7 @@ There are 6 executables that can be tested. To benchmark the obfuscated NAND gat
 ```
 ./ohlg
 ```
-To benchmark shortint and longint operations (Please note it may take few miutes up to 10~15 for longint):
-```
-./shortint
-./longint
-```
+
 For the ODM application, first use:
 ```
 ./client_odm
@@ -240,7 +236,7 @@ which asks the user to enter the search character to be encrypted. Then
 ```
 sequentially to execute the matching process and decrypt the result.  
 
-To benchmark shortint and longint operations (Please note it may take few miutes up to 10~15 for longint):
+To benchmark shortint and longint operations (Please note it may take few minutes up to 10~15 for longint):
 ```
 ./shortint
 ./longint
